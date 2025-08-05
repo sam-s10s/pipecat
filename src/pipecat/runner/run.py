@@ -357,6 +357,27 @@ async def _run_daily_direct():
         await bot_module.bot(runner_args)
 
 
+def _validate_and_clean_proxy(proxy: str) -> str:
+    """Validate and clean proxy hostname, removing protocol if present."""
+    if not proxy:
+        return proxy
+
+    original_proxy = proxy
+
+    # Strip common protocols
+    if proxy.startswith(("http://", "https://")):
+        proxy = proxy.split("://", 1)[1]
+        logger.warning(
+            f"Removed protocol from proxy URL. Using '{proxy}' instead of '{original_proxy}'. "
+            f"The --proxy argument expects only the hostname (e.g., 'mybot.ngrok.io')."
+        )
+
+    # Remove trailing slashes
+    proxy = proxy.rstrip("/")
+
+    return proxy
+
+
 def main():
     """Start the Pipecat development runner.
 
@@ -408,6 +429,10 @@ def main():
 
     args = parser.parse_args()
 
+    # Validate and clean proxy hostname
+    if args.proxy:
+        args.proxy = _validate_and_clean_proxy(args.proxy)
+
     # Auto-set transport to daily if --direct is used without explicit transport
     if args.direct and args.transport == "webrtc":  # webrtc is the default
         args.transport = "daily"
@@ -438,17 +463,16 @@ def main():
     if args.transport == "webrtc":
         print()
         if args.esp32:
-            print(
-                f"🚀 WebRTC server starting at http://{args.host}:{args.port}/client (ESP32 mode)"
-            )
+            print(f"🚀 Bot ready! (ESP32 mode)")
+            print(f"   → Open http://{args.host}:{args.port}/client in your browser")
         else:
-            print(f"🚀 WebRTC server starting at http://{args.host}:{args.port}/client")
-        print(f"   Open this URL in your browser to connect!")
+            print(f"🚀 Bot ready!")
+            print(f"   → Open http://{args.host}:{args.port}/client in your browser")
         print()
     elif args.transport == "daily":
         print()
-        print(f"🚀 Daily server starting at http://{args.host}:{args.port}")
-        print(f"   Open this URL in your browser to start a session!")
+        print(f"🚀 Bot ready!")
+        print(f"   → Open http://{args.host}:{args.port} in your browser to start a session")
         print()
 
     # Create the app with transport-specific setup

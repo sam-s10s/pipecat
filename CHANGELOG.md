@@ -9,12 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Updated the `pipecat.runner.daily` utility to only a take `DAILY_API_URL` and
+  `DAILY_SAMPLE_ROOM_URL` environment variables instead of argparsing `-u` and
+  `-k`, respectively.
+
 - Updated `daily-python` to 0.19.6.
+
+- Changed `TavusVideoService` to send audio or video frames only after the
+  transport is ready, preventing warning messages at startup.
+
+- The development runner now strips any provided protocol (e.g. https://) from
+  the proxy address and issues a warning. It also strips trailing `/`.
 
 ### Fixed
 
 - Fixed an issue in `LiveKitTransport` where empty `AudioRawFrame`s were pushed
   down the pipeline. This resulted in warnings by the STT processor.
+- Fixed `PiperTTSService` to send text as a JSON object in the request body,
+  resolving compatibility with Piper's HTTP API.
 
 - Fixed an issue with the `TavusVideoService` where an error was thrown due to
   missing transcription callbacks.
@@ -26,6 +38,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Fixed an issue in `TaskObserver` (a proxy to all observers) that was degrading
   global performance.
+
+### Deprecated
+
+- In the `pipecat.runner.daily`, the `configure_with_args()` function is
+  deprecated. Use the `configure()` function instead.
 
 ## [0.0.77] - 2025-07-31
 
