@@ -16,6 +16,7 @@ from enum import Enum
 from typing import Any, AsyncGenerator
 from urllib.parse import urlencode
 
+from dotenv import load_dotenv
 from loguru import logger
 from pydantic import BaseModel
 
@@ -53,6 +54,12 @@ except ModuleNotFoundError as e:
         "In order to use Speechmatics, you need to `pip install pipecat-ai[speechmatics]`."
     )
     raise Exception(f"Missing module: {e}")
+
+# Load environment variables
+load_dotenv()
+
+# Increase debugging messages (can be noisy!)
+DEBUG_MORE = os.getenv("SPEECHMATICS_DEBUG_MORE", "0").lower() in ["1", "true"]
 
 
 class EndOfUtteranceMode(str, Enum):
@@ -154,6 +161,12 @@ class SpeakerFragments:
     def _format_text(self, format: str | None = None) -> str:
         """Wrap text with speaker ID in an optional f-string format.
 
+        Supported format variables:
+            speaker_id: The ID of the speaker.
+            text: The text of the fragment.
+            ts: The timestamp of the fragment.
+            lang: The language of the fragment.
+
         Args:
             format: Format to wrap the text with.
 
@@ -173,7 +186,14 @@ class SpeakerFragments:
         # Format the text, if format is provided
         if format is None or self.speaker_id is None:
             return content
-        return format.format(**{"speaker_id": self.speaker_id, "text": content})
+        return format.format(
+            **{
+                "speaker_id": self.speaker_id,
+                "text": content,
+                "ts": self.timestamp,
+                "lang": self.language,
+            }
+        )
 
     def _as_frame_attributes(
         self, active_format: str | None = None, passive_format: str | None = None
@@ -545,7 +565,7 @@ class SpeechmaticsSTTService(STTService):
 
             @self._client.on(ServerMessageType.END_OF_UTTERANCE)
             def _evt_on_end_of_utterance(message: dict[str, Any]):
-                logger.debug("End of utterance received from STT")
+                # logger.debug("End of utterance received from STT")
                 asyncio.run_coroutine_threadsafe(
                     self._handle_end_of_utterance(), self.get_event_loop()
                 )
@@ -734,6 +754,12 @@ class SpeechmaticsSTTService(STTService):
         if not speech_frames:
             return
 
+        # Debug what is in the buffer
+        if DEBUG_MORE:
+            logger.debug(
+                [f._format_text("{speaker_id}: {text}") for f in speech_frames],
+            )
+
         # Check at least one frame is active
         if not any(frame.is_active for frame in speech_frames):
             return
@@ -758,7 +784,8 @@ class SpeechmaticsSTTService(STTService):
             downstream_frames += [
                 TranscriptionFrame(
                     **frame._as_frame_attributes(
-                        self._params.speaker_active_format, self._params.speaker_passive_format
+                        self._params.speaker_active_format,
+                        self._params.speaker_passive_format,
                     )
                 )
                 for frame in speech_frames
@@ -772,7 +799,8 @@ class SpeechmaticsSTTService(STTService):
             downstream_frames += [
                 InterimTranscriptionFrame(
                     **frame._as_frame_attributes(
-                        self._params.speaker_active_format, self._params.speaker_passive_format
+                        self._params.speaker_active_format,
+                        self._params.speaker_passive_format,
                     )
                 )
                 for frame in speech_frames
