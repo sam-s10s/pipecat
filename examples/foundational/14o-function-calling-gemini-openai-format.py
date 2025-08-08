@@ -57,7 +57,7 @@ transport_params = {
 }
 
 
-async def run_bot(transport: BaseTransport):
+async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     logger.info(f"Starting bot")
 
     stt = DeepgramSTTService(api_key=os.getenv("DEEPGRAM_API_KEY"))
@@ -67,7 +67,7 @@ async def run_bot(transport: BaseTransport):
         voice_id=os.getenv("ELEVENLABS_VOICE_ID", ""),
     )
 
-    llm = GoogleLLMOpenAIBetaService(api_key=os.getenv("GEMINI_API_KEY"))
+    llm = GoogleLLMOpenAIBetaService(api_key=os.getenv("GOOGLE_API_KEY"))
     # You can aslo register a function_name of None to get all functions
     # sent to the same callback with an additional function_name parameter.
     llm.register_function("get_current_weather", fetch_weather_from_api)
@@ -121,6 +121,7 @@ async def run_bot(transport: BaseTransport):
             enable_metrics=True,
             enable_usage_metrics=True,
         ),
+        idle_timeout_secs=runner_args.pipeline_idle_timeout_secs,
     )
 
     @transport.event_handler("on_client_connected")
@@ -134,7 +135,7 @@ async def run_bot(transport: BaseTransport):
         logger.info(f"Client disconnected")
         await task.cancel()
 
-    runner = PipelineRunner(handle_sigint=False)
+    runner = PipelineRunner(handle_sigint=runner_args.handle_sigint)
 
     await runner.run(task)
 
@@ -142,7 +143,7 @@ async def run_bot(transport: BaseTransport):
 async def bot(runner_args: RunnerArguments):
     """Main bot entry point compatible with Pipecat Cloud."""
     transport = await create_transport(runner_args, transport_params)
-    await run_bot(transport)
+    await run_bot(transport, runner_args)
 
 
 if __name__ == "__main__":

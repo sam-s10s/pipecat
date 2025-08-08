@@ -82,7 +82,7 @@ from pipecat.runner.types import (
 try:
     import uvicorn
     from dotenv import load_dotenv
-    from fastapi import BackgroundTasks, FastAPI, WebSocket
+    from fastapi import BackgroundTasks, FastAPI, Request, WebSocket
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import HTMLResponse, RedirectResponse
 except ImportError as e:
@@ -145,6 +145,7 @@ async def _run_telephony_bot(websocket: WebSocket):
 
     # Just pass the WebSocket - let the bot handle parsing
     runner_args = WebSocketRunnerArguments(websocket=websocket)
+    runner_args.handle_sigint = False
 
     await bot_module.bot(runner_args)
 
@@ -222,6 +223,7 @@ def _setup_webrtc_routes(app: FastAPI, esp32_mode: bool = False, host: str = "lo
 
             bot_module = _get_bot_module()
             runner_args = SmallWebRTCRunnerArguments(webrtc_connection=pipecat_connection)
+            runner_args.handle_sigint = False
             background_tasks.add_task(bot_module.bot, runner_args)
 
         answer = pipecat_connection.get_answer()
@@ -261,16 +263,43 @@ def _setup_daily_routes(app: FastAPI):
         async with aiohttp.ClientSession() as session:
             room_url, token = await configure(session)
 
-            # Start the bot in the background
+            # Start the bot in the background with empty body for GET requests
             bot_module = _get_bot_module()
-            runner_args = DailyRunnerArguments(room_url=room_url, token=token, body={})
+            runner_args = DailyRunnerArguments(room_url=room_url, token=token)
+            runner_args.handle_sigint = False
             asyncio.create_task(bot_module.bot(runner_args))
             return RedirectResponse(room_url)
 
-    @app.post("/connect")
-    async def rtvi_connect():
-        """Launch a Daily bot and return connection info for RTVI clients."""
+    async def _handle_rtvi_request(request: Request):
+        """Common handler for both /start and /connect endpoints.
+
+        Expects POST body like::
+
+            {
+                "createDailyRoom": true,
+                "dailyRoomProperties": { "start_video_off": true },
+                "body": { "custom_data": "value" }
+            }
+        """
         print("Starting bot with Daily transport")
+
+        # Parse the request body
+        try:
+            request_data = await request.json()
+            logger.debug(f"Received request: {request_data}")
+        except Exception as e:
+            logger.error(f"Failed to parse request body: {e}")
+            request_data = {}
+
+        # Extract the body data that should be passed to the bot
+        # This mimics Pipecat Cloud's behavior
+        bot_body = request_data.get("body", {})
+
+        # Log the extracted body data for debugging
+        if bot_body:
+            logger.info(f"Extracted body data for bot: {bot_body}")
+        else:
+            logger.debug("No body data provided in request")
 
         import aiohttp
 
@@ -279,11 +308,31 @@ def _setup_daily_routes(app: FastAPI):
         async with aiohttp.ClientSession() as session:
             room_url, token = await configure(session)
 
-            # Start the bot in the background
+            # Start the bot in the background with extracted body data
             bot_module = _get_bot_module()
-            runner_args = DailyRunnerArguments(room_url=room_url, token=token, body={})
+            runner_args = DailyRunnerArguments(room_url=room_url, token=token, body=bot_body)
+            runner_args.handle_sigint = False
             asyncio.create_task(bot_module.bot(runner_args))
-            return {"room_url": room_url, "token": token}
+            # Match PCC /start endpoint response format:
+            return {"dailyRoom": room_url, "dailyToken": token}
+
+    @app.post("/start")
+    async def rtvi_start(request: Request):
+        """Launch a Daily bot and return connection info for RTVI clients."""
+        return await _handle_rtvi_request(request)
+
+    @app.post("/connect")
+    async def rtvi_connect(request: Request):
+        """Launch a Daily bot and return connection info for RTVI clients.
+
+        .. deprecated:: 0.0.78
+            Use /start instead. This endpoint will be removed in a future version.
+        """
+        logger.warning(
+            "DEPRECATED: /connect endpoint is deprecated. Please use /start instead. "
+            "This endpoint will be removed in a future version."
+        )
+        return await _handle_rtvi_request(request)
 
 
 def _setup_telephony_routes(app: FastAPI, transport_type: str, proxy: str):
@@ -345,7 +394,8 @@ async def _run_daily_direct():
     async with aiohttp.ClientSession() as session:
         room_url, token = await configure(session)
 
-        runner_args = DailyRunnerArguments(room_url=room_url, token=token, body={})
+        # Direct connections have no request body, so use empty dict
+        runner_args = DailyRunnerArguments(room_url=room_url, token=token)
 
         # Get the bot module and run it directly
         bot_module = _get_bot_module()

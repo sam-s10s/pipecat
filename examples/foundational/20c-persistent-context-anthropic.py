@@ -14,6 +14,7 @@ from loguru import logger
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
+from pipecat.frames.frames import TTSSpeakFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
@@ -88,7 +89,7 @@ async def load_conversation(params: FunctionCallParams):
             logger.debug(
                 f"loaded conversation from {filename}\n{json.dumps(params.context.messages, indent=4)}"
             )
-        await tts.say("Ok, I've loaded that conversation.")
+        await params.llm.queue_frame(TTSSpeakFrame("Ok, I've loaded that conversation."))
     except Exception as e:
         await params.result_callback({"success": False, "error": str(e)})
 
@@ -182,7 +183,7 @@ transport_params = {
 }
 
 
-async def run_bot(transport: BaseTransport):
+async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     logger.info(f"Starting bot")
 
     global tts
@@ -226,6 +227,7 @@ async def run_bot(transport: BaseTransport):
             enable_metrics=True,
             enable_usage_metrics=True,
         ),
+        idle_timeout_secs=runner_args.pipeline_idle_timeout_secs,
     )
 
     @transport.event_handler("on_client_connected")
@@ -239,7 +241,7 @@ async def run_bot(transport: BaseTransport):
         logger.info(f"Client disconnected")
         await task.cancel()
 
-    runner = PipelineRunner(handle_sigint=False)
+    runner = PipelineRunner(handle_sigint=runner_args.handle_sigint)
 
     await runner.run(task)
 
@@ -247,7 +249,7 @@ async def run_bot(transport: BaseTransport):
 async def bot(runner_args: RunnerArguments):
     """Main bot entry point compatible with Pipecat Cloud."""
     transport = await create_transport(runner_args, transport_params)
-    await run_bot(transport)
+    await run_bot(transport, runner_args)
 
 
 if __name__ == "__main__":

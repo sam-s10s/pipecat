@@ -5,9 +5,106 @@ All notable changes to **Pipecat** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## Unreleased
+
+### Other
+
+- Updated `15-switch-voices.py` and `15a-switch-languages.py` examples to show
+  how to enclose complex logic (e.g. `ParallelPipeline`) into a single processor
+  so the main pipeline becomes simpler.
+
+## [0.0.79] - 2025-08-07
 
 ### Changed
+
+- Changed `pipecat-ai`'s `openai` dependency to `>=1.74.0,<=1.99.1` due to a
+  breaking change in `openai` 1.99.2 ([commit](https://github.com/openai/openai-python/commit/657f551dbe583ffb259d987dafae12c6211fba06))
+
+### Deprecated
+
+- `TTSService.say()` is deprecated, push a `TTSSpeakFrame` instead. Calling
+  functions directly is a discouraged pattern in Pipecat because, for example,
+  it might cause issues with frame ordering.
+
+- `LLMMessagesFrame` is deprecated, in favor of either:
+
+  - `LLMMessagesUpdateFrame` with `run_llm=True`
+  - `OpenAILLMContextFrame` with desired messages in a new context
+
+- `LLMUserResponseAggregator` and `LLMAssistantResponseAggregator` are
+  deprecated, as they depended on the now-deprecated `LLMMessagesFrame`. Use
+  `LLMUserContextAggregator` and `LLMAssistantResponseAggregator` (or
+  LLM-specific subclasses thereof) instead.
+
+## [0.0.78] - 2025-08-07
+
+### Added
+
+- Added `enable_emulated_vad_interruptions` to `LLMUserAggregatorParams`.
+  When user speech is emulated (e.g. when a transcription is received but
+  VAD doesn't detect speech), this parameter controls whether the emulated
+  speech can interrupt the bot. Default is False (emulated speech is ignored
+  while the bot is speaking).
+
+- Added new `handle_sigint` and `handle_sigterm` to `RunnerArguments`. This
+  allows applications to know what settings they should use for the environment
+  they are running on. Also, added `pipeline_idle_timeout_secs` to be able to
+  control the `PipelineTask` idle timeout.
+
+- Added `processor` field to `ErrorFrame` to indicate `FrameProcessor` that
+  generated the error.
+
+- Added new language support for `AWSTranscribeSTTService`. All languages
+  supporting streaming data input are now supported:
+  https://docs.aws.amazon.com/transcribe/latest/dg/supported-languages.html
+
+- Added support for Simli Trinity Avatars. A new `is_trinity_avatar` parameter
+  has been introduced to specify whether the provided `faceId` corresponds to a
+  Trinity avatar, which is required for optimal Trinity avatar performance.
+
+- The development runner how handles custom `body` data for `DailyTransport`.
+  The `body` data is passed to the Pipecat client. You can POST to the `/start`
+  endpoint with a request body of:
+
+  ```
+  {
+      "createDailyRoom": true,
+      "dailyRoomProperties": { "start_video_off": true },
+      "body": { "custom_data": "value" }
+  }
+  ```
+
+  The `body` information is parsed and used in the application. The
+  `dailyRoomProperties` are currently not handled.
+
+- Added detailed latency logging to `UserBotLatencyLogObserver`, capturing
+  average response time between user stop and bot start, as well as minimum and
+  maximum response latency.
+
+- Added Chinese, Japanese, Korean word timestamp support to
+  `CartesiaTTSService`.
+
+- Added `region` parameter to `GladiaSTTService`. Accepted values: eu-west
+  (default), us-west.
+
+### Changed
+
+- System frames are now queued. Before, system frames could be generated from
+  any task and would not guarantee any order which was causing undesired
+  behavior. Also, it was possible to get into some rare recursion issues because
+  of the way system frames were executed (they were executed in-place, meaning
+  calling `push_frame()` would finish after the system frame traversed all the
+  pipeline). This makes system frames more deterministic.
+
+- Changed the default model for both `ElevenLabsTTSService` and
+  `ElevenLabsHttpTTSService` to `eleven_turbo_v2_5`. The rationale for this
+  change is that the Turbo v2.5 model exhibits the most stable voice quality
+  along with very low latency TTFB; latencies are on par with the Flash v2.5
+  model. Also, the Turbo v2.5 model outputs word/timestamp alignment data with
+  correct spacing.
+
+- The development runners `/connect` and `/start` endpoint now both return
+  `dailyRoom` and `dailyToken` in place of the previous `room_url` and `token`.
 
 - Updated the `pipecat.runner.daily` utility to only a take `DAILY_API_URL` and
   `DAILY_SAMPLE_ROOM_URL` environment variables instead of argparsing `-u` and
@@ -21,7 +118,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The development runner now strips any provided protocol (e.g. https://) from
   the proxy address and issues a warning. It also strips trailing `/`.
 
+### Deprecated
+
+- In the `pipecat.runner.daily`, the `configure_with_args()` function is
+  deprecated. Use the `configure()` function instead.
+
+- The development runner's `/connect` endpoint is deprecated and will be
+  removed in a future version. Use the `/start` endpoint in its place. In the
+  meantime, both endpoints work and deliver equivalent functionality.
+
 ### Fixed
+
+- Fixed a `DailyTransport` issue that would result in an unhandled
+  `concurrent.futures.CancelledError` when a future is cancelled.
+
+- Fixed a `RivaSTTService` issue that would result in an unhandled
+  `concurrent.futures.CancelledError` when a future is cancelled when reading
+  from the audio chunks from the incoming audio stream.
+
+- Fixed an issue in the `BaseOutputTransport`, mainly reproducible with
+  `FastAPIWebsocketOutputTransport` when the audio mixer was enabled, where the
+  loop could consume 100% CPU by continuously returning without delay, preventing
+  other asyncio tasks (such as cancellation or shutdown signals) from being
+  processed.
+
+- Fixed an issue where `BotStartedSpeakingFrame` and `BotStoppedSpeakingFrame`
+  were not emitted when using `TavusVideoService` or `HeyGenVideoService`.
 
 - Fixed an issue in `LiveKitTransport` where empty `AudioRawFrame`s were pushed
   down the pipeline. This resulted in warnings by the STT processor.
@@ -39,10 +161,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed an issue in `TaskObserver` (a proxy to all observers) that was degrading
   global performance.
 
-### Deprecated
+### Other
 
-- In the `pipecat.runner.daily`, the `configure_with_args()` function is
-  deprecated. Use the `configure()` function instead.
+- Added `07aa-interruptible-soniox.py`, `07ab-interruptible-inworld-http.py`,
+  `07ac-interruptible-asyncai.py` and `07ac-interruptible-asyncai-http.py`
+  release evals.
 
 ## [0.0.77] - 2025-07-31
 

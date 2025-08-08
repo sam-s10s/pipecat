@@ -15,13 +15,16 @@ from pipecat.frames.frames import (
     DataFrame,
     Frame,
     LLMFullResponseStartFrame,
-    LLMMessagesFrame,
     TextFrame,
 )
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.sync_parallel_pipeline import SyncParallelPipeline
 from pipecat.pipeline.task import PipelineTask
+from pipecat.processors.aggregators.openai_llm_context import (
+    OpenAILLMContext,
+    OpenAILLMContextFrame,
+)
 from pipecat.processors.aggregators.sentence import SentenceAggregator
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.runner.types import RunnerArguments
@@ -83,7 +86,7 @@ transport_params = {
 }
 
 
-async def run_bot(transport: BaseTransport):
+async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     """Run the Calendar Month Narration bot using WebRTC transport.
 
     Args:
@@ -153,9 +156,12 @@ async def run_bot(transport: BaseTransport):
                 }
             ]
             frames.append(MonthFrame(month=month))
-            frames.append(LLMMessagesFrame(messages))
+            frames.append(OpenAILLMContextFrame(OpenAILLMContext(messages)))
 
-        task = PipelineTask(pipeline)
+        task = PipelineTask(
+            pipeline,
+            idle_timeout_secs=runner_args.pipeline_idle_timeout_secs,
+        )
 
         # Set up transport event handlers
         @transport.event_handler("on_client_connected")
@@ -170,14 +176,14 @@ async def run_bot(transport: BaseTransport):
             await task.cancel()
 
         # Run the pipeline
-        runner = PipelineRunner(handle_sigint=False)
+        runner = PipelineRunner(handle_sigint=runner_args.handle_sigint)
         await runner.run(task)
 
 
 async def bot(runner_args: RunnerArguments):
     """Main bot entry point compatible with Pipecat Cloud."""
     transport = await create_transport(runner_args, transport_params)
-    await run_bot(transport)
+    await run_bot(transport, runner_args)
 
 
 if __name__ == "__main__":

@@ -18,11 +18,6 @@ The example:
         - Individual recording of user audio
         - Individual recording of assistant audio
 
-Example usage (run from pipecat root directory):
-    $ pip install "pipecat-ai[daily,openai,cartesia,silero]"
-    $ pip install -r dev-requirements.txt
-    $ python examples/foundational/34-audio-recording.py
-
 Requirements:
     - OpenAI API key (for GPT-4)
     - Cartesia API key (for text-to-speech)
@@ -109,7 +104,7 @@ transport_params = {
 }
 
 
-async def run_bot(transport: BaseTransport):
+async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     logger.info(f"Starting bot")
 
     stt = DeepgramSTTService(api_key=os.getenv("DEEPGRAM_API_KEY"), audio_passthrough=True)
@@ -153,6 +148,7 @@ async def run_bot(transport: BaseTransport):
             enable_metrics=True,
             enable_usage_metrics=True,
         ),
+        idle_timeout_secs=runner_args.pipeline_idle_timeout_secs,
     )
 
     @transport.event_handler("on_client_connected")
@@ -190,14 +186,14 @@ async def run_bot(transport: BaseTransport):
         bot_filename = f"recordings/bot_{timestamp}.wav"
         await save_audio_file(bot_audio, bot_filename, sample_rate, 1)
 
-    runner = PipelineRunner(handle_sigint=False)
+    runner = PipelineRunner(handle_sigint=runner_args.handle_sigint)
     await runner.run(task)
 
 
 async def bot(runner_args: RunnerArguments):
     """Main bot entry point compatible with Pipecat Cloud."""
     transport = await create_transport(runner_args, transport_params)
-    await run_bot(transport)
+    await run_bot(transport, runner_args)
 
 
 if __name__ == "__main__":
