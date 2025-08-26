@@ -670,7 +670,7 @@ class LLMUserContextAggregator(LLMContextResponseAggregator):
                         if self._vad_params
                         else self._params.turn_emulated_vad_timeout
                     )
-                await asyncio.wait_for(self._aggregation_event.wait(), timeout)
+                await asyncio.wait_for(self._aggregation_event.wait(), timeout=timeout)
                 await self._maybe_emulate_user_speaking()
             except asyncio.TimeoutError:
                 if not self._user_speaking:
@@ -684,7 +684,6 @@ class LLMUserContextAggregator(LLMContextResponseAggregator):
                     )
                     self._emulating_vad = False
             finally:
-                self.reset_watchdog()
                 self._aggregation_event.clear()
 
     async def _maybe_emulate_user_speaking(self):
@@ -986,10 +985,6 @@ class LLMAssistantContextAggregator(LLMContextResponseAggregator):
 
     def _context_updated_task_finished(self, task: asyncio.Task):
         self._context_updated_tasks.discard(task)
-        # The task is finished so this should exit immediately. We need to do
-        # this because otherwise the task manager would report a dangling task
-        # if we don't remove it.
-        asyncio.run_coroutine_threadsafe(self.wait_for_task(task), self.get_event_loop())
 
 
 class LLMUserResponseAggregator(LLMUserContextAggregator):
