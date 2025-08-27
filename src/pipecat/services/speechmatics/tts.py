@@ -15,6 +15,7 @@ from loguru import logger
 from pydantic import BaseModel
 
 from pipecat.frames.frames import (
+    EndFrame,
     ErrorFrame,
     Frame,
     TTSAudioRawFrame,
@@ -46,7 +47,7 @@ class SpeechmaticsTTSService(TTSService):
         *,
         api_key: str | None = None,
         base_url: str | None = None,
-        aiohttp_session: aiohttp.ClientSession,
+        aiohttp_session: Optional[aiohttp.ClientSession] = None,
         sample_rate: Optional[int] = 16000,
         params: InputParams | None = None,
         **kwargs,
@@ -58,7 +59,8 @@ class SpeechmaticsTTSService(TTSService):
                 `SPEECHMATICS_API_KEY` if not provided.
             base_url: Base URL for Speechmatics TTS API. Defaults to
                 `https://preview.tts.speechmatics.com/generate`.
-            aiohttp_session: Shared aiohttp session for HTTP requests.
+            aiohttp_session: Optional shared aiohttp session for HTTP requests.
+                If not provided, a new session will be created.
             sample_rate: Audio sample rate in Hz. Defaults to 16000.
             params: Optional[InputParams]: Input parameters for the service.
             **kwargs: Additional arguments passed to TTSService.
@@ -68,15 +70,14 @@ class SpeechmaticsTTSService(TTSService):
         # Service parameters
         self._api_key: str = api_key or os.getenv("SPEECHMATICS_API_KEY")
         self._base_url: str = base_url or "https://preview.tts.speechmatics.com/generate"
-        self._session = aiohttp_session
+        self._session = aiohttp_session or aiohttp.ClientSession()
+        self._owns_session = aiohttp_session is None
 
         # Check we have required attributes
         if not self._api_key:
             raise ValueError("Missing Speechmatics API key")
         if not self._base_url:
             raise ValueError("Missing Speechmatics base URL")
-        if not self._session:
-            raise ValueError("Missing aiohttp session")
 
         # Default parameters
         self._params = params or SpeechmaticsTTSService.InputParams()
@@ -190,3 +191,16 @@ class SpeechmaticsTTSService(TTSService):
             yield ErrorFrame(error=f"Speechmatics TTS error: {str(e)}")
         finally:
             yield TTSStoppedFrame()
+
+    async def stop(self, frame: EndFrame):
+        """Stop the TTS service and clean up resources.
+
+        Args:
+            frame: The end frame.
+        """
+        await super().stop(frame)
+        if self._owns_session and self._session:
+            try:
+                await self._session.close()
+            except Exception as e:
+                logger.warning(f"Error closing aiohttp session: {e}")
