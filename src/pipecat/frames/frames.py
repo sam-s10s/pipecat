@@ -27,6 +27,7 @@ from typing import (
     Tuple,
 )
 
+from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from pipecat.audio.interruptions.base_interruption_strategy import BaseInterruptionStrategy
 from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
 from pipecat.audio.vad.vad_analyzer import VADParams
@@ -36,6 +37,7 @@ from pipecat.utils.time import nanoseconds_to_str
 from pipecat.utils.utils import obj_count, obj_id
 
 if TYPE_CHECKING:
+    from pipecat.processors.aggregators.llm_context import LLMContext, NotGiven
     from pipecat.processors.frame_processor import FrameProcessor
 
 
@@ -403,6 +405,11 @@ class OpenAILLMContextAssistantTimestampFrame(DataFrame):
     timestamp: str
 
 
+# A more universal (LLM-agnostic) name for
+# OpenAILLMContextAssistantTimestampFrame, matching LLMContext
+LLMContextAssistantTimestampFrame = OpenAILLMContextAssistantTimestampFrame
+
+
 @dataclass
 class TranscriptionMessage:
     """A message in a conversation transcript.
@@ -472,6 +479,20 @@ class TranscriptionUpdateFrame(DataFrame):
     def __str__(self):
         pts = format_pts(self.pts)
         return f"{self.name}(pts: {pts}, messages: {len(self.messages)})"
+
+
+@dataclass
+class LLMContextFrame(Frame):
+    """Frame containing a universal LLM context.
+
+    Used as a signal to LLM services to ingest the provided context and
+    generate a response based on it.
+
+    Parameters:
+        context: The LLM context containing messages, tools, and configuration.
+    """
+
+    context: "LLMContext"
 
 
 @dataclass
@@ -556,7 +577,7 @@ class LLMSetToolsFrame(DataFrame):
         tools: List of tool/function definitions for the LLM.
     """
 
-    tools: List[dict]
+    tools: List[dict] | ToolsSchema | "NotGiven"
 
 
 @dataclass
@@ -1445,3 +1466,20 @@ class MixerEnableFrame(MixerControlFrame):
     """
 
     enable: bool
+
+
+@dataclass
+class ServiceSwitcherFrame(ControlFrame):
+    """A base class for frames that control ServiceSwitcher behavior."""
+
+    pass
+
+
+@dataclass
+class ManuallySwitchServiceFrame(ServiceSwitcherFrame):
+    """A frame to request a manual switch in the active service in a ServiceSwitcher.
+
+    Handled by ServiceSwitcherStrategyManual to switch the active service.
+    """
+
+    service: "FrameProcessor"
