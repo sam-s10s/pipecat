@@ -87,6 +87,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Updated `CartesiaTTSService` and `CartesiaHttpTTSService` to align with
+  Cartesia's changes for the `speed` parameter. It now takes only an enum of
+  `slow`, `normal`, or `fast`.
+
 - Added support to `AWSBedrockLLMService` for setting authentication
   credentials through environment variables.
 
@@ -95,6 +99,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   via `SarvamHttpTTSService`.
 
 ### Fixed
+
+- Fixed some `get_messages_for_logging()` that were returning a JSON string
+  instead of a list.
+
+- Fixed a `DailyTransport` issue that prevented DTMF tones from being sent.
 
 - Fixed a missing import in `SentryMetrics`.
 
