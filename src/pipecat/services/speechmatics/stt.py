@@ -61,6 +61,7 @@ load_dotenv()
 
 # Increase debugging messages (can be noisy!)
 DEBUG_MORE = os.getenv("SPEECHMATICS_DEBUG_MORE", "0").lower() in ["1", "true"]
+DEBUG_MESSAGES = os.getenv("SPEECHMATICS_DEBUG_MESSAGES", "0").lower() in ["1", "true"]
 
 
 class EndOfUtteranceMode(str, Enum):
@@ -452,6 +453,7 @@ class SpeechmaticsSTTService(STTService):
 
         # Current utterance speech data
         self._speech_fragments: list[SpeechFragment] = []
+        self._speech_fragments_lock: asyncio.Lock = asyncio.Lock()
 
         # Speaking states
         self._is_speaking: bool = False
@@ -466,6 +468,10 @@ class SpeechmaticsSTTService(STTService):
 
         # EndOfUtterance fallback timer
         self._end_of_utterance_timer: asyncio.Task | None = None
+
+        # Frame sender timer
+        self._transcription_frame_sender_wait_time: float = 0.005
+        self._transcription_frame_sender_timer: asyncio.Task | None = None
 
     async def start(self, frame: StartFrame):
         """Called when the new session starts."""
@@ -550,7 +556,7 @@ class SpeechmaticsSTTService(STTService):
         logger.debug(f"{self} Connecting to Speechmatics STT service")
 
         # Recognition started event
-        @self._client.on(ServerMessageType.RECOGNITION_STARTED)
+        @self._client.once(ServerMessageType.RECOGNITION_STARTED)
         def _evt_on_recognition_started(message: dict[str, Any]):
             logger.debug(f"Recognition started (session: {message.get('id')})")
             self._start_time = datetime.datetime.now(datetime.timezone.utc)
@@ -572,7 +578,8 @@ class SpeechmaticsSTTService(STTService):
 
             @self._client.on(ServerMessageType.END_OF_UTTERANCE)
             def _evt_on_end_of_utterance(message: dict[str, Any]):
-                # logger.debug("End of utterance received from STT")
+                if DEBUG_MESSAGES:
+                    logger.debug(f"EndOfUtterance: {message}")
                 asyncio.run_coroutine_threadsafe(
                     self._handle_end_of_utterance(), self.get_event_loop()
                 )
@@ -684,8 +691,24 @@ class SpeechmaticsSTTService(STTService):
             message: The new Partial or Final from the STT engine.
             is_final: Whether the data is final or partial.
         """
+        # Handle async
+        asyncio.run_coroutine_threadsafe(
+            self._handle_transcript_async(message, is_final), self.get_event_loop()
+        )
+
+    async def _handle_transcript_async(self, message: dict[str, Any], is_final: bool) -> None:
+        """Handle the partial and final transcript events (async).
+
+        Args:
+            message: The new Partial or Final from the STT engine.
+            is_final: Whether the data is final or partial.
+        """
+        # Debug payloads
+        if DEBUG_MESSAGES:
+            logger.debug(f"Payload: {message}")
+
         # Add the speech fragments
-        has_changed = self._add_speech_fragments(
+        has_changed = await self._add_speech_fragments(
             message=message,
             is_final=is_final,
         )
@@ -694,11 +717,23 @@ class SpeechmaticsSTTService(STTService):
         if not has_changed:
             return
 
+        # Clear any existing timer
+        if self._transcription_frame_sender_timer is not None:
+            self._transcription_frame_sender_timer.cancel()
+
         # Set a timer for the end of utterance
         self._end_of_utterance_timer_start()
 
-        # Send frames
-        asyncio.run_coroutine_threadsafe(self._send_frames(), self.get_event_loop())
+        # Send transcription frames after delay
+        async def send_after_delay(delay: float):
+            await asyncio.sleep(delay)
+            await self._send_frames()
+            self._transcription_frame_sender_timer = None
+
+        # Send frames after delay
+        self._transcription_frame_sender_timer = asyncio.create_task(
+            send_after_delay(self._transcription_frame_sender_wait_time)
+        )
 
     @traced_stt
     async def _handle_transcription(
@@ -726,7 +761,11 @@ class SpeechmaticsSTTService(STTService):
         async def send_after_delay(delay: float):
             await asyncio.sleep(delay)
             logger.debug("Fallback EndOfUtterance triggered.")
-            asyncio.run_coroutine_threadsafe(self._handle_end_of_utterance(), self.get_event_loop())
+            if self._client:
+                asyncio.run_coroutine_threadsafe(
+                    self._handle_end_of_utterance(), self.get_event_loop()
+                )
+            self._end_of_utterance_timer = None
 
         # Start the timer
         self._end_of_utterance_timer = asyncio.create_task(
@@ -829,7 +868,7 @@ class SpeechmaticsSTTService(STTService):
         for frame in downstream_frames:
             await self.push_frame(frame, FrameDirection.DOWNSTREAM)
 
-    def _add_speech_fragments(self, message: dict[str, Any], is_final: bool = False) -> bool:
+    async def _add_speech_fragments(self, message: dict[str, Any], is_final: bool = False) -> bool:
         """Takes a new Partial or Final from the STT engine.
 
         Accumulates it into the _speech_data list. As new final data is added, all
@@ -846,66 +885,67 @@ class SpeechmaticsSTTService(STTService):
         Returns:
             bool: True if the speech data was updated, False otherwise.
         """
-        # Parsed new speech data from the STT engine
-        fragments: list[SpeechFragment] = []
+        async with self._speech_fragments_lock:
+            # Parsed new speech data from the STT engine
+            fragments: list[SpeechFragment] = []
 
-        # Current length of the speech data
-        current_length = len(self._speech_fragments)
+            # Current length of the speech data
+            current_length = len(self._speech_fragments)
 
-        # Iterate over the results in the payload
-        for result in message.get("results", []):
-            alt = result.get("alternatives", [{}])[0]
-            if alt.get("content", None):
-                # Create the new fragment
-                fragment = SpeechFragment(
-                    start_time=result.get("start_time", 0),
-                    end_time=result.get("end_time", 0),
-                    language=alt.get("language", Language.EN),
-                    is_eos=alt.get("is_eos", False),
-                    is_final=is_final,
-                    attaches_to=result.get("attaches_to", ""),
-                    content=alt.get("content", ""),
-                    speaker=alt.get("speaker", None),
-                    confidence=alt.get("confidence", 1.0),
-                    result=result,
-                )
+            # Iterate over the results in the payload
+            for result in message.get("results", []):
+                alt = result.get("alternatives", [{}])[0]
+                if alt.get("content", None):
+                    # Create the new fragment
+                    fragment = SpeechFragment(
+                        start_time=result.get("start_time", 0),
+                        end_time=result.get("end_time", 0),
+                        language=alt.get("language", Language.EN),
+                        is_eos=alt.get("is_eos", False),
+                        is_final=is_final,
+                        attaches_to=result.get("attaches_to", ""),
+                        content=alt.get("content", ""),
+                        speaker=alt.get("speaker", None),
+                        confidence=alt.get("confidence", 1.0),
+                        result=result,
+                    )
 
-                # Speaker filtering
-                if fragment.speaker:
-                    # Drop `__XX__` speakers
-                    if re.match(r"^__[A-Z0-9_]{2,}__$", fragment.speaker):
-                        continue
+                    # Speaker filtering
+                    if fragment.speaker:
+                        # Drop `__XX__` speakers
+                        if re.match(r"^__[A-Z0-9_]{2,}__$", fragment.speaker):
+                            continue
 
-                    # Drop speakers not focussed on
-                    if (
-                        self._params.focus_mode == DiarizationFocusMode.IGNORE
-                        and self._params.focus_speakers
-                        and fragment.speaker not in self._params.focus_speakers
-                    ):
-                        continue
+                        # Drop speakers not focussed on
+                        if (
+                            self._params.focus_mode == DiarizationFocusMode.IGNORE
+                            and self._params.focus_speakers
+                            and fragment.speaker not in self._params.focus_speakers
+                        ):
+                            continue
 
-                    # Drop ignored speakers
-                    if (
-                        self._params.ignore_speakers
-                        and fragment.speaker in self._params.ignore_speakers
-                    ):
-                        continue
+                        # Drop ignored speakers
+                        if (
+                            self._params.ignore_speakers
+                            and fragment.speaker in self._params.ignore_speakers
+                        ):
+                            continue
 
-                # Add the fragment
-                fragments.append(fragment)
+                    # Add the fragment
+                    fragments.append(fragment)
 
-        # Remove existing partials, as new partials and finals are provided
-        self._speech_fragments = [frag for frag in self._speech_fragments if frag.is_final]
+            # Remove existing partials, as new partials and finals are provided
+            self._speech_fragments = [frag for frag in self._speech_fragments if frag.is_final]
 
-        # Return if no new fragments and length of the existing data is unchanged
-        if not fragments and len(self._speech_fragments) == current_length:
-            return False
+            # Return if no new fragments and length of the existing data is unchanged
+            if not fragments and len(self._speech_fragments) == current_length:
+                return False
 
-        # Add the fragments to the speech data
-        self._speech_fragments.extend(fragments)
+            # Add the fragments to the speech data
+            self._speech_fragments.extend(fragments)
 
-        # Data was updated
-        return True
+            # Data was updated
+            return True
 
     def _get_frames_from_fragments(self) -> list[SpeakerFragments]:
         """Get speech data objects for the current fragment list.
