@@ -11,8 +11,6 @@ import datetime
 import os
 import re
 import warnings
-from dataclasses import dataclass, field
-from enum import Enum
 from typing import Any, AsyncGenerator
 from urllib.parse import urlencode
 
@@ -38,15 +36,23 @@ from pipecat.transcriptions.language import Language
 from pipecat.utils.tracing.service_decorators import traced_stt
 
 try:
-    from speechmatics.rt import (
-        AsyncClient,
+    from .sdk import (
+        AdditionalVocabEntry,
+        AgentServerMessageType,
+        AnnotationFlags,
+        AnnotationResult,
         AudioEncoding,
         AudioFormat,
         ClientMessageType,
         ConversationConfig,
+        DiarizationFocusMode,
+        DiarizationKnownSpeaker,
+        EndOfUtteranceMode,
         OperatingPoint,
-        ServerMessageType,
+        SpeakerSegment,
+        SpeechFragment,
         TranscriptionConfig,
+        VoiceAgentClient,
         __version__,
     )
 except ModuleNotFoundError as e:
@@ -62,162 +68,6 @@ load_dotenv()
 # Increase debugging messages (can be noisy!)
 DEBUG_MORE = os.getenv("SPEECHMATICS_DEBUG_MORE", "0").lower() in ["1", "true"]
 DEBUG_MESSAGES = os.getenv("SPEECHMATICS_DEBUG_MESSAGES", "0").lower() in ["1", "true"]
-
-
-class EndOfUtteranceMode(str, Enum):
-    """End of turn delay options for transcription."""
-
-    NONE = "none"
-    FIXED = "fixed"
-    ADAPTIVE = "adaptive"
-
-
-class DiarizationFocusMode(str, Enum):
-    """Speaker focus mode for diarization."""
-
-    RETAIN = "retain"
-    IGNORE = "ignore"
-
-
-@dataclass
-class AdditionalVocabEntry:
-    """Additional vocabulary entry.
-
-    Parameters:
-        content: The word to add to the dictionary.
-        sounds_like: Similar words to the word.
-    """
-
-    content: str
-    sounds_like: list[str] = field(default_factory=list)
-
-
-@dataclass
-class DiarizationKnownSpeaker:
-    """Known speakers for speaker diarization.
-
-    Parameters:
-        label: The label of the speaker.
-        speaker_identifiers: One or more data strings for the speaker.
-    """
-
-    label: str
-    speaker_identifiers: list[str]
-
-
-@dataclass
-class SpeechFragment:
-    """Fragment of an utterance.
-
-    Parameters:
-        start_time: Start time of the fragment in seconds (from session start).
-        end_time: End time of the fragment in seconds (from session start).
-        language: Language of the fragment. Defaults to `Language.EN`.
-        is_eos: Whether the fragment is the end of a sentence. Defaults to `False`.
-        is_final: Whether the fragment is the final fragment. Defaults to `False`.
-        is_disfluency: Whether the fragment is a disfluency. Defaults to `False`.
-        is_punctuation: Whether the fragment is a punctuation. Defaults to `False`.
-        attaches_to: Whether the fragment attaches to the previous or next fragment (punctuation). Defaults to empty string.
-        content: Content of the fragment. Defaults to empty string.
-        speaker: Speaker of the fragment (if diarization is enabled). Defaults to `None`.
-        confidence: Confidence of the fragment (0.0 to 1.0). Defaults to `1.0`.
-        result: Raw result of the fragment from the TTS.
-    """
-
-    start_time: float
-    end_time: float
-    language: Language = Language.EN
-    is_eos: bool = False
-    is_final: bool = False
-    is_disfluency: bool = False
-    is_punctuation: bool = False
-    attaches_to: str = ""
-    content: str = ""
-    speaker: str | None = None
-    confidence: float = 1.0
-    result: Any | None = None
-
-
-@dataclass
-class SpeakerFragments:
-    """SpeechFragment items grouped by speaker_id.
-
-    Parameters:
-        speaker_id: The ID of the speaker.
-        is_active: Whether the speaker is active (emits frame).
-        timestamp: The timestamp of the frame.
-        language: The language of the frame.
-        fragments: The list of SpeechFragment items.
-    """
-
-    speaker_id: str | None = None
-    is_active: bool = False
-    timestamp: str | None = None
-    language: Language | None = None
-    fragments: list[SpeechFragment] = field(default_factory=list)
-
-    def __str__(self):
-        """Return a string representation of the object."""
-        return f"SpeakerFragments(speaker_id: {self.speaker_id}, timestamp: {self.timestamp}, language: {self.language}, text: {self._format_text()})"
-
-    def _format_text(self, format: str | None = None) -> str:
-        """Wrap text with speaker ID in an optional f-string format.
-
-        Supported format variables:
-            speaker_id: The ID of the speaker.
-            text: The text of the fragment.
-            ts: The timestamp of the fragment.
-            lang: The language of the fragment.
-
-        Args:
-            format: Format to wrap the text with.
-
-        Returns:
-            str: The wrapped text.
-        """
-        # Cumulative contents
-        content = ""
-
-        # Assemble the text
-        for frag in self.fragments:
-            if content == "" or frag.attaches_to == "previous":
-                content += frag.content
-            else:
-                content += " " + frag.content
-
-        # Format the text, if format is provided
-        if format is None or self.speaker_id is None:
-            return content
-        return format.format(
-            **{
-                "speaker_id": self.speaker_id,
-                "text": content,
-                "ts": self.timestamp,
-                "lang": self.language,
-            }
-        )
-
-    def _as_frame_attributes(
-        self, active_format: str | None = None, passive_format: str | None = None
-    ) -> dict[str, Any]:
-        """Return a dictionary of attributes for a TranscriptionFrame.
-
-        Args:
-            active_format: Format to wrap the text with.
-            passive_format: Format to wrap the text with. Defaults to `active_format`.
-
-        Returns:
-            dict[str, Any]: The dictionary of attributes.
-        """
-        return {
-            "text": self._format_text(
-                active_format if self.is_active else passive_format or active_format
-            ),
-            "user_id": self.speaker_id or "",
-            "timestamp": self.timestamp,
-            "language": self.language,
-            "result": [frag.result for frag in self.fragments],
-        }
 
 
 class SpeechmaticsSTTService(STTService):
@@ -449,7 +299,7 @@ class SpeechmaticsSTTService(STTService):
         self._process_config()
 
         # STT client
-        self._client: AsyncClient | None = None
+        self._client: VoiceAgentClient | None = None
 
         # Current utterance speech data
         self._speech_fragments: list[SpeechFragment] = []
@@ -467,7 +317,7 @@ class SpeechmaticsSTTService(STTService):
             self._register_event_handler("on_speakers_result")
 
         # EndOfUtterance fallback timer
-        self._end_of_utterance_timer: asyncio.Task | None = None
+        self._finalize_timer: asyncio.Task | None = None
 
         # Frame sender timer
         self._transcription_frame_sender_wait_time: float = 0.005
@@ -547,68 +397,84 @@ class SpeechmaticsSTTService(STTService):
     async def _connect(self) -> None:
         """Connect to the STT service."""
         # Create new STT RT client
-        self._client = AsyncClient(
+        self._client = VoiceAgentClient(
             api_key=self._api_key,
             url=_get_endpoint_url(self._base_url),
         )
 
-        # Log the event
-        logger.debug(f"{self} Connecting to Speechmatics STT service")
+        # # Log the event
+        # logger.debug(f"{self} Connecting to Speechmatics STT service")
 
-        # Recognition started event
-        @self._client.once(ServerMessageType.RECOGNITION_STARTED)
-        def _evt_on_recognition_started(message: dict[str, Any]):
-            logger.debug(f"Recognition started (session: {message.get('id')})")
-            self._start_time = datetime.datetime.now(datetime.timezone.utc)
+        # # Recognition started event
+        # @self._client.once(ServerMessageType.RECOGNITION_STARTED)
+        # def _evt_on_recognition_started(message: dict[str, Any]):
+        #     logger.debug(f"Recognition started (session: {message.get('id')})")
+        #     self._start_time = datetime.datetime.now(datetime.timezone.utc)
 
-        # Partial transcript event
-        if self._params.enable_partials:
+        # # Partial transcript event
+        # if self._params.enable_partials:
 
-            @self._client.on(ServerMessageType.ADD_PARTIAL_TRANSCRIPT)
-            def _evt_on_partial_transcript(message: dict[str, Any]):
-                self._handle_transcript(message, is_final=False)
+        #     @self._client.on(ServerMessageType.ADD_PARTIAL_TRANSCRIPT)
+        #     def _evt_on_partial_transcript(message: dict[str, Any]):
+        #         self._handle_transcript(message, is_final=False)
 
-        # Final transcript event
-        @self._client.on(ServerMessageType.ADD_TRANSCRIPT)
-        def _evt_on_final_transcript(message: dict[str, Any]):
-            self._handle_transcript(message, is_final=True)
+        # # Final transcript event
+        # @self._client.on(ServerMessageType.ADD_TRANSCRIPT)
+        # def _evt_on_final_transcript(message: dict[str, Any]):
+        #     self._handle_transcript(message, is_final=True)
 
-        # End of Utterance
-        if self._params.end_of_utterance_mode == EndOfUtteranceMode.FIXED:
+        # # End of Utterance
+        # @self._client.on(ServerMessageType.END_OF_UTTERANCE)
+        # def _evt_on_end_of_utterance(message: dict[str, Any]):
+        #     if DEBUG_MESSAGES:
+        #         logger.debug(f"EndOfUtterance: {message}")
+        #     self._reset_finalize_timer()
 
-            @self._client.on(ServerMessageType.END_OF_UTTERANCE)
-            def _evt_on_end_of_utterance(message: dict[str, Any]):
-                if DEBUG_MESSAGES:
-                    logger.debug(f"EndOfUtterance: {message}")
-                asyncio.run_coroutine_threadsafe(
-                    self._handle_end_of_utterance(), self.get_event_loop()
-                )
+        # # Speaker Result
+        # if self._params.enable_diarization:
 
-        # Speaker Result
-        if self._params.enable_diarization:
+        #     @self._client.on(ServerMessageType.SPEAKERS_RESULT)
+        #     def _evt_on_speakers_result(message: dict[str, Any]):
+        #         logger.debug("Speakers result received from STT")
+        #         asyncio.run_coroutine_threadsafe(
+        #             self._call_event_handler("on_speakers_result", message),
+        #             self.get_event_loop(),
+        #         )
 
-            @self._client.on(ServerMessageType.SPEAKERS_RESULT)
-            def _evt_on_speakers_result(message: dict[str, Any]):
-                logger.debug("Speakers result received from STT")
-                asyncio.run_coroutine_threadsafe(
-                    self._call_event_handler("on_speakers_result", message),
-                    self.get_event_loop(),
-                )
+        # # Start session
+        # try:
+        #     await self._client.start_session(
+        #         transcription_config=self._transcription_config,
+        #         audio_format=AudioFormat(
+        #             encoding=self._params.audio_encoding,
+        #             sample_rate=self.sample_rate,
+        #             chunk_size=self._params.chunk_size,
+        #         ),
+        #     )
+        #     logger.debug(f"{self} Connected to Speechmatics STT service")
+        # except Exception as e:
+        #     logger.error(f"{self} Error connecting to Speechmatics: {e}")
+        #     self._client = None
 
-        # Start session
-        try:
-            await self._client.start_session(
-                transcription_config=self._transcription_config,
-                audio_format=AudioFormat(
-                    encoding=self._params.audio_encoding,
-                    sample_rate=self.sample_rate,
-                    chunk_size=self._params.chunk_size,
-                ),
-            )
-            logger.debug(f"{self} Connected to Speechmatics STT service")
-        except Exception as e:
-            logger.error(f"{self} Error connecting to Speechmatics: {e}")
-            self._client = None
+        # Interim segment event
+        @self._client.on(AgentServerMessageType.INTERIM_SEGMENT)
+        def _evt_on_interim_segment(message: dict[str, Any]):
+            logger.warning("Interim segment received from STT")
+
+        # Final segment event
+        @self._client.on(AgentServerMessageType.FINAL_SEGMENT)
+        def _evt_on_final_segment(message: dict[str, Any]):
+            logger.warning("Final segment received from STT")
+
+        # Connect to the client
+        await self._client.connect(
+            transcription_config=self._transcription_config,
+            audio_format=AudioFormat(
+                encoding=self._params.audio_encoding,
+                sample_rate=self.sample_rate,
+                chunk_size=self._params.chunk_size,
+            ),
+        )
 
     async def _disconnect(self) -> None:
         """Disconnect from the STT service."""
@@ -721,18 +587,18 @@ class SpeechmaticsSTTService(STTService):
         if self._transcription_frame_sender_timer is not None:
             self._transcription_frame_sender_timer.cancel()
 
-        # Set a timer for the end of utterance
-        self._end_of_utterance_timer_start()
+        # Set a timer to force finalize
+        self._start_finalize_timer()
 
         # Send transcription frames after delay
-        async def send_after_delay(delay: float):
+        async def send_frames_after_delay(delay: float):
             await asyncio.sleep(delay)
             await self._send_frames()
             self._transcription_frame_sender_timer = None
 
         # Send frames after delay
         self._transcription_frame_sender_timer = asyncio.create_task(
-            send_after_delay(self._transcription_frame_sender_wait_time)
+            send_frames_after_delay(self._transcription_frame_sender_wait_time)
         )
 
     @traced_stt
@@ -742,7 +608,7 @@ class SpeechmaticsSTTService(STTService):
         """Handle a transcription result with tracing."""
         pass
 
-    def _end_of_utterance_timer_start(self):
+    def _start_finalize_timer(self):
         """Start the timer for the end of utterance.
 
         This will use the STT's `end_of_utterance_silence_trigger` value and set
@@ -754,37 +620,45 @@ class SpeechmaticsSTTService(STTService):
         real world time to that inside of the STT engine.
         """
         # Reset the end of utterance timer
-        if self._end_of_utterance_timer is not None:
-            self._end_of_utterance_timer.cancel()
+        if self._finalize_timer is not None:
+            self._reset_finalize_timer()
 
         # Send after a delay
-        async def send_after_delay(delay: float):
+        async def finalize_after_delay(delay: float):
             await asyncio.sleep(delay)
             logger.debug("Fallback EndOfUtterance triggered.")
-            if self._client:
-                asyncio.run_coroutine_threadsafe(
-                    self._handle_end_of_utterance(), self.get_event_loop()
-                )
-            self._end_of_utterance_timer = None
+            await self._finalize_transcript()
+            self._reset_finalize_timer()
 
         # Start the timer
-        self._end_of_utterance_timer = asyncio.create_task(
-            send_after_delay(self._params.end_of_utterance_silence_trigger * 2)
+        self._finalize_timer = asyncio.create_task(
+            finalize_after_delay(self._params.end_of_utterance_silence_trigger * 2)
         )
 
-    async def _handle_end_of_utterance(self):
+    def _reset_finalize_timer(self):
         """Handle the end of utterance event.
 
         This will check for any running timers for end of utterance, reset them,
         and then send a finalized frame to the pipeline.
         """
-        # Send the frames
-        await self._send_frames(finalized=True)
-
         # Reset the end of utterance timer
-        if self._end_of_utterance_timer:
-            self._end_of_utterance_timer.cancel()
-            self._end_of_utterance_timer = None
+        if self._finalize_timer:
+            self._finalize_timer.cancel()
+            self._finalize_timer = None
+
+    async def _finalize_transcript(self):
+        """Finalize the transcript.
+
+        This will make sure that all existing fragments are marked as finalized
+        and sent to the pipeline.
+        """
+        async with self._speech_fragments_lock:
+            # Mark all fragments as finalized
+            for fragment in self._speech_fragments:
+                fragment.is_final = True
+
+        # Send the frames
+        await self._send_frames()
 
     async def _send_frames(self, finalized: bool = False) -> None:
         """Send frames to the pipeline.
@@ -868,6 +742,8 @@ class SpeechmaticsSTTService(STTService):
         for frame in downstream_frames:
             await self.push_frame(frame, FrameDirection.DOWNSTREAM)
 
+    # def _
+
     async def _add_speech_fragments(self, message: dict[str, Any], is_final: bool = False) -> bool:
         """Takes a new Partial or Final from the STT engine.
 
@@ -883,14 +759,22 @@ class SpeechmaticsSTTService(STTService):
             is_final: Whether the data is final or partial.
 
         Returns:
-            bool: True if the speech data was updated, False otherwise.
+            TranscriptionResult: The result of processing the transcription.
         """
         async with self._speech_fragments_lock:
+            # Result
+            result = AnnotationResult()
+
             # Parsed new speech data from the STT engine
             fragments: list[SpeechFragment] = []
 
-            # Current length of the speech data
-            current_length = len(self._speech_fragments)
+            # Current transcription
+            current = {
+                "final_count": len([frag for frag in self._speech_fragments if frag.is_final]),
+                "partial_count": len(
+                    [frag for frag in self._speech_fragments if not frag.is_final]
+                ),
+            }
 
             # Iterate over the results in the payload
             for result in message.get("results", []):
@@ -937,8 +821,12 @@ class SpeechmaticsSTTService(STTService):
             # Remove existing partials, as new partials and finals are provided
             self._speech_fragments = [frag for frag in self._speech_fragments if frag.is_final]
 
+            # If the
+            result.add(AnnotationFlags.UPDATED_LCASE_COMPLETE)
+            logger.warning(result)
+
             # Return if no new fragments and length of the existing data is unchanged
-            if not fragments and len(self._speech_fragments) == current_length:
+            if not fragments and len(self._speech_fragments) == current_final_count:
                 return False
 
             # Add the fragments to the speech data
@@ -947,17 +835,17 @@ class SpeechmaticsSTTService(STTService):
             # Data was updated
             return True
 
-    def _get_frames_from_fragments(self) -> list[SpeakerFragments]:
+    def _get_frames_from_fragments(self) -> list[SpeakerSegment]:
         """Get speech data objects for the current fragment list.
 
         Each speech fragments is grouped by contiguous speaker and then
-        returned as internal SpeakerFragments objects with the `speaker_id` field
+        returned as internal SpeakerSegment objects with the `speaker_id` field
         set to the current speaker (string). An utterance may contain speech from
         more than one speaker (e.g. S1, S2, S1, S3, ...), so they are kept
         in strict order for the context of the conversation.
 
         Returns:
-            List[SpeakerFragments]: The list of objects.
+            List[SpeakerSegment]: The list of objects.
         """
         # Speaker groups
         current_speaker: str | None = None
@@ -972,20 +860,20 @@ class SpeechmaticsSTTService(STTService):
             speaker_groups[-1].append(frag)
 
         # Create SpeakerFragments objects
-        speaker_fragments: list[SpeakerFragments] = []
+        segments: list[SpeakerSegment] = []
         for group in speaker_groups:
-            sd = self._get_speaker_fragments_from_fragment_group(group)
+            sd = self._get_speaker_segment_from_fragment_group(group)
             if sd:
-                speaker_fragments.append(sd)
+                segments.append(sd)
 
         # Return the grouped SpeakerFragments objects
-        return speaker_fragments
+        return segments
 
-    def _get_speaker_fragments_from_fragment_group(
+    def _get_speaker_segment_from_fragment_group(
         self,
         group: list[SpeechFragment],
-    ) -> SpeakerFragments | None:
-        """Take a group of fragments and piece together into SpeakerFragments.
+    ) -> SpeakerSegment | None:
+        """Take a group of fragments and piece together into SpeakerSegment.
 
         Each fragment for a given speaker is assembled into a string,
         taking into consideration whether words are attached to the
@@ -998,7 +886,7 @@ class SpeechmaticsSTTService(STTService):
             group: List of SpeechFragment objects.
 
         Returns:
-            SpeakerFragments: The object for the group.
+            SpeakerSegment: The object for the group.
         """
         # Check for starting fragments that are attached to previous
         if group and group[0].attaches_to == "previous":
@@ -1025,8 +913,8 @@ class SpeechmaticsSTTService(STTService):
         if self._params.enable_diarization and self._params.focus_speakers:
             is_active = group[0].speaker in self._params.focus_speakers
 
-        # Return the SpeakerFragments object
-        return SpeakerFragments(
+        # Return the SpeakerSegment object
+        return SpeakerSegment(
             speaker_id=group[0].speaker,
             timestamp=ts,
             language=group[0].language,
