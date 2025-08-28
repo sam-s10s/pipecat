@@ -208,10 +208,10 @@ class SpeakerFragments:
         Returns:
             dict[str, Any]: The dictionary of attributes.
         """
-        if not passive_format:
-            passive_format = active_format
         return {
-            "text": self._format_text(active_format if self.is_active else passive_format),
+            "text": self._format_text(
+                active_format if self.is_active else passive_format or active_format
+            ),
             "user_id": self.speaker_id or "",
             "timestamp": self.timestamp,
             "language": self.language,
@@ -765,12 +765,6 @@ class SpeechmaticsSTTService(STTService):
         if not speech_frames:
             return
 
-        # Debug what is in the buffer
-        if DEBUG_MORE:
-            logger.debug(
-                [f._format_text("{speaker_id}: {text}") for f in speech_frames],
-            )
-
         # Check at least one frame is active
         if not any(frame.is_active for frame in speech_frames):
             return
@@ -816,6 +810,10 @@ class SpeechmaticsSTTService(STTService):
                 )
                 for frame in speech_frames
             ]
+
+            # Log transcript(s)
+            if DEBUG_MORE:
+                logger.debug(f"Interim transcript: {[f.text for f in downstream_frames]}")
 
         # If VAD is enabled, then send a speaking frame
         if self._params.enable_vad and self._is_speaking and finalized:
