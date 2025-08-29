@@ -31,6 +31,7 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.stt_service import STTService
 from pipecat.transcriptions.language import Language
+from pipecat.utils.tracing.service_decorators import traced_stt
 
 try:
     from .sdk import (
@@ -308,6 +309,26 @@ class SpeechmaticsSTTService(STTService):
         await super().cancel(frame)
         await self._disconnect()
 
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        """Process frames for VAD and metrics handling.
+
+        Args:
+            frame: Frame to process.
+            direction: Direction of frame processing.
+        """
+        await super().process_frame(frame, direction)
+        # if isinstance(frame, UserStartedSpeakingFrame):
+        #     await self.start_ttfb_metrics()
+        # elif isinstance(frame, UserStoppedSpeakingFrame):
+        #     if self._vad_force_turn_endpoint:
+        #         await self._websocket.send(json.dumps({"type": "ForceEndpoint"}))
+        #     await self.start_processing_metrics()
+
+    @traced_stt
+    async def _trace_transcription(self, transcript: str, is_final: bool, language: Language):
+        """Record transcription event for tracing."""
+        pass
+
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
         """Adds audio to the audio buffer and yields None."""
         try:
@@ -414,6 +435,11 @@ class SpeechmaticsSTTService(STTService):
                     self.get_event_loop(),
                 )
 
+        # Metrics
+        @self._client.on(AgentServerMessageType.METRICS)
+        def _evt_on_metrics(message: dict[str, Any]):
+            logger.debug(f"Metrics received from STT: {message}")
+
         # Connect to the client
         try:
             await self._client.connect()
@@ -428,8 +454,7 @@ class SpeechmaticsSTTService(STTService):
         logger.debug(f"{self} Disconnecting from Speechmatics STT service")
         try:
             if self._client:
-                await asyncio.wait_for(self._client.close(), timeout=5.0)
-                logger.debug(f"{self} Disconnected from Speechmatics STT service")
+                await self._client.disconnect()
         except asyncio.TimeoutError:
             logger.warning(f"{self} Timeout while closing Speechmatics client connection")
         except Exception as e:
@@ -515,21 +540,24 @@ class SpeechmaticsSTTService(STTService):
 
         # If final, then re-parse into TranscriptionFrame
         if finalized:
-            # Transform frames
+            # Create finalized frames
             downstream_frames += [
                 TranscriptionFrame(**attr_from_segment(segment)) for segment in segments
             ]
 
-            # Log transcript(s)
-            logger.debug(f"Finalized transcript: {[f.text for f in downstream_frames]}")
+            # Trace finalized transcript
+            finalized_text = "|".join([s.format_text() for s in segments])
+            await self._trace_transcription(finalized_text, True, segments[0].language)
+            logger.debug(f"Finalized transcript: {finalized_text}")
 
         # Return as interim results (unformatted)
         else:
+            # Create interim frames
             downstream_frames += [
                 InterimTranscriptionFrame(**attr_from_segment(segment)) for segment in segments
             ]
 
-            # Log transcript(s)
+            # Debug interim transcript
             logger.debug(f"Interim transcript: {[f.text for f in downstream_frames]}")
 
         # If VAD is enabled, then send a speaking frame
@@ -545,6 +573,14 @@ class SpeechmaticsSTTService(STTService):
         # Send the DOWNSTREAM frames
         for frame in downstream_frames:
             await self.push_frame(frame, FrameDirection.DOWNSTREAM)
+
+    def can_generate_metrics(self) -> bool:
+        """Check if this service can generate processing metrics.
+
+        Returns:
+            True, as Deepgram service supports metrics generation.
+        """
+        return True
 
 
 def _get_endpoint_url(url: str) -> str:

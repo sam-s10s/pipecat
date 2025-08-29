@@ -237,6 +237,7 @@ class AgentServerMessageType(str, Enum):
         FinalSegments: A final segment has been detected.
         SpeakersResult: Speakers result has been detected.
         Metrics: Metrics for the STT engine.
+        SpeakerMetrics: Metrics relating to speakers.
 
     Examples:
         >>> # Register event handlers for different message types
@@ -276,6 +277,7 @@ class AgentServerMessageType(str, Enum):
 
     # Metrics
     METRICS = "Metrics"
+    SPEAKER_METRICS = "SpeakerMetrics"
 
 
 class AnnotationFlags(IntFlag):
@@ -504,8 +506,8 @@ class SpeakerFragmentView:
         annotate_segments: bool = True,
     ):
         self.fragments = fragments
-        self._base_time = base_time
-        self._focus_speakers = focus_speakers
+        self.base_time = base_time
+        self.focus_speakers = focus_speakers
         self.segments = self._get_segments_from_fragments(annotate_segments=annotate_segments)
 
     @property
@@ -527,6 +529,20 @@ class SpeakerFragmentView:
     @property
     def segment_count(self) -> int:
         return len(self.segments)
+
+    @property
+    def last_active_segment_index(self) -> int:
+        idx = next(
+            (i for i, segment in enumerate(reversed(self.segments)) if segment.is_active),
+            None,
+        )
+        if idx is None:
+            return -1
+        return len(self.segments) - idx - 1
+
+    @property
+    def partial_segment_count(self) -> int:
+        return sum(1 for seg in self.segments if not seg.is_final)
 
     def format_text(
         self, format: str = "|{speaker_id}|{text}|", separator: str = "", words_only: bool = False
@@ -593,14 +609,14 @@ class SpeakerFragmentView:
         start_time = min(frag.start_time for frag in group)
 
         # Timestamp
-        ts = (self._base_time + datetime.timedelta(seconds=start_time)).isoformat(
+        ts = (self.base_time + datetime.timedelta(seconds=start_time)).isoformat(
             timespec="milliseconds"
         )
 
         # Determine if the speaker is considered active
         is_active = True
-        if self._focus_speakers:
-            is_active = group[0].speaker in self._focus_speakers
+        if self.focus_speakers:
+            is_active = group[0].speaker in self.focus_speakers
 
         # New SpeakerSegment
         segment = SpeakerSegment(
