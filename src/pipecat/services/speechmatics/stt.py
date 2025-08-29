@@ -9,7 +9,6 @@
 import asyncio
 import datetime
 import os
-import re
 import warnings
 from typing import Any, AsyncGenerator
 from urllib.parse import urlencode
@@ -33,14 +32,11 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.stt_service import STTService
 from pipecat.transcriptions.language import Language
-from pipecat.utils.tracing.service_decorators import traced_stt
 
 try:
     from .sdk import (
         AdditionalVocabEntry,
         AgentServerMessageType,
-        AnnotationFlags,
-        AnnotationResult,
         AudioEncoding,
         AudioFormat,
         ClientMessageType,
@@ -64,10 +60,6 @@ except ModuleNotFoundError as e:
 
 # Load environment variables
 load_dotenv()
-
-# Increase debugging messages (can be noisy!)
-DEBUG_MORE = os.getenv("SPEECHMATICS_DEBUG_MORE", "0").lower() in ["1", "true"]
-DEBUG_MESSAGES = os.getenv("SPEECHMATICS_DEBUG_MESSAGES", "0").lower() in ["1", "true"]
 
 
 class SpeechmaticsSTTService(STTService):
@@ -457,14 +449,18 @@ class SpeechmaticsSTTService(STTService):
         #     self._client = None
 
         # Interim segment event
-        @self._client.on(AgentServerMessageType.INTERIM_SEGMENT)
+        @self._client.on(AgentServerMessageType.INTERIM_SEGMENTS)
         def _evt_on_interim_segment(message: dict[str, Any]):
-            logger.warning("Interim segment received from STT")
+            asyncio.run_coroutine_threadsafe(
+                self._send_frames(message["segments"]), self.get_event_loop()
+            )
 
         # Final segment event
-        @self._client.on(AgentServerMessageType.FINAL_SEGMENT)
+        @self._client.on(AgentServerMessageType.FINAL_SEGMENTS)
         def _evt_on_final_segment(message: dict[str, Any]):
-            logger.warning("Final segment received from STT")
+            asyncio.run_coroutine_threadsafe(
+                self._send_frames(message["segments"], finalized=True), self.get_event_loop()
+            )
 
         # Connect to the client
         await self._client.connect(
@@ -550,117 +546,7 @@ class SpeechmaticsSTTService(STTService):
         # Set config
         self._transcription_config = transcription_config
 
-    def _handle_transcript(self, message: dict[str, Any], is_final: bool) -> None:
-        """Handle the partial and final transcript events.
-
-        Args:
-            message: The new Partial or Final from the STT engine.
-            is_final: Whether the data is final or partial.
-        """
-        # Handle async
-        asyncio.run_coroutine_threadsafe(
-            self._handle_transcript_async(message, is_final), self.get_event_loop()
-        )
-
-    async def _handle_transcript_async(self, message: dict[str, Any], is_final: bool) -> None:
-        """Handle the partial and final transcript events (async).
-
-        Args:
-            message: The new Partial or Final from the STT engine.
-            is_final: Whether the data is final or partial.
-        """
-        # Debug payloads
-        if DEBUG_MESSAGES:
-            logger.debug(f"Payload: {message}")
-
-        # Add the speech fragments
-        has_changed = await self._add_speech_fragments(
-            message=message,
-            is_final=is_final,
-        )
-
-        # Skip if unchanged
-        if not has_changed:
-            return
-
-        # Clear any existing timer
-        if self._transcription_frame_sender_timer is not None:
-            self._transcription_frame_sender_timer.cancel()
-
-        # Set a timer to force finalize
-        self._start_finalize_timer()
-
-        # Send transcription frames after delay
-        async def send_frames_after_delay(delay: float):
-            await asyncio.sleep(delay)
-            await self._send_frames()
-            self._transcription_frame_sender_timer = None
-
-        # Send frames after delay
-        self._transcription_frame_sender_timer = asyncio.create_task(
-            send_frames_after_delay(self._transcription_frame_sender_wait_time)
-        )
-
-    @traced_stt
-    async def _handle_transcription(
-        self, transcript: str, is_final: bool, language: Language | None = None
-    ):
-        """Handle a transcription result with tracing."""
-        pass
-
-    def _start_finalize_timer(self):
-        """Start the timer for the end of utterance.
-
-        This will use the STT's `end_of_utterance_silence_trigger` value and set
-        a timer to send the latest transcript to the pipeline. It is used as a
-        fallback from the EnfOfUtterance messages from the STT.
-
-        Note that the `end_of_utterance_silence_trigger` will be from when the
-        last updated speech was received and this will likely be longer in
-        real world time to that inside of the STT engine.
-        """
-        # Reset the end of utterance timer
-        if self._finalize_timer is not None:
-            self._reset_finalize_timer()
-
-        # Send after a delay
-        async def finalize_after_delay(delay: float):
-            await asyncio.sleep(delay)
-            logger.debug("Fallback EndOfUtterance triggered.")
-            await self._finalize_transcript()
-            self._reset_finalize_timer()
-
-        # Start the timer
-        self._finalize_timer = asyncio.create_task(
-            finalize_after_delay(self._params.end_of_utterance_silence_trigger * 2)
-        )
-
-    def _reset_finalize_timer(self):
-        """Handle the end of utterance event.
-
-        This will check for any running timers for end of utterance, reset them,
-        and then send a finalized frame to the pipeline.
-        """
-        # Reset the end of utterance timer
-        if self._finalize_timer:
-            self._finalize_timer.cancel()
-            self._finalize_timer = None
-
-    async def _finalize_transcript(self):
-        """Finalize the transcript.
-
-        This will make sure that all existing fragments are marked as finalized
-        and sent to the pipeline.
-        """
-        async with self._speech_fragments_lock:
-            # Mark all fragments as finalized
-            for fragment in self._speech_fragments:
-                fragment.is_final = True
-
-        # Send the frames
-        await self._send_frames()
-
-    async def _send_frames(self, finalized: bool = False) -> None:
+    async def _send_frames(self, segments: list[SpeakerSegment], finalized: bool = False) -> None:
         """Send frames to the pipeline.
 
         Send speech frames to the pipeline. If VAD is enabled, then this will
@@ -669,17 +555,11 @@ class SpeechmaticsSTTService(STTService):
         and stop interruption frames.
 
         Args:
+            segments: The segments to send.
             finalized: Whether the data is final or partial.
         """
-        # Get speech frames (InterimTranscriptionFrame)
-        speech_frames = self._get_frames_from_fragments()
-
         # Skip if no frames
-        if not speech_frames:
-            return
-
-        # Check at least one frame is active
-        if not any(frame.is_active for frame in speech_frames):
+        if not segments:
             return
 
         # Frames to send
@@ -695,18 +575,15 @@ class SpeechmaticsSTTService(STTService):
 
         # If final, then re-parse into TranscriptionFrame
         if finalized:
-            # Reset the speech fragments
-            self._speech_fragments.clear()
-
             # Transform frames
             downstream_frames += [
                 TranscriptionFrame(
-                    **frame._as_frame_attributes(
+                    **segment._as_attributes(
                         self._params.speaker_active_format,
                         self._params.speaker_passive_format,
                     )
                 )
-                for frame in speech_frames
+                for segment in segments
             ]
 
             # Log transcript(s)
@@ -716,17 +593,16 @@ class SpeechmaticsSTTService(STTService):
         else:
             downstream_frames += [
                 InterimTranscriptionFrame(
-                    **frame._as_frame_attributes(
+                    **segment._as_attributes(
                         self._params.speaker_active_format,
                         self._params.speaker_passive_format,
                     )
                 )
-                for frame in speech_frames
+                for segment in segments
             ]
 
             # Log transcript(s)
-            if DEBUG_MORE:
-                logger.debug(f"Interim transcript: {[f.text for f in downstream_frames]}")
+            logger.debug(f"Interim transcript: {[f.text for f in downstream_frames]}")
 
         # If VAD is enabled, then send a speaking frame
         if self._params.enable_vad and self._is_speaking and finalized:
@@ -741,186 +617,6 @@ class SpeechmaticsSTTService(STTService):
         # Send the DOWNSTREAM frames
         for frame in downstream_frames:
             await self.push_frame(frame, FrameDirection.DOWNSTREAM)
-
-    # def _
-
-    async def _add_speech_fragments(self, message: dict[str, Any], is_final: bool = False) -> bool:
-        """Takes a new Partial or Final from the STT engine.
-
-        Accumulates it into the _speech_data list. As new final data is added, all
-        partials are removed from the list.
-
-        Note: If a known speaker is `__[A-Z0-9_]{2,}__`, then the words are skipped,
-        as this is used to protect against self-interruption by the assistant or to
-        block out specific known voices.
-
-        Args:
-            message: The new Partial or Final from the STT engine.
-            is_final: Whether the data is final or partial.
-
-        Returns:
-            TranscriptionResult: The result of processing the transcription.
-        """
-        async with self._speech_fragments_lock:
-            # Result
-            result = AnnotationResult()
-
-            # Parsed new speech data from the STT engine
-            fragments: list[SpeechFragment] = []
-
-            # Current transcription
-            current = {
-                "final_count": len([frag for frag in self._speech_fragments if frag.is_final]),
-                "partial_count": len(
-                    [frag for frag in self._speech_fragments if not frag.is_final]
-                ),
-            }
-
-            # Iterate over the results in the payload
-            for result in message.get("results", []):
-                alt = result.get("alternatives", [{}])[0]
-                if alt.get("content", None):
-                    # Create the new fragment
-                    fragment = SpeechFragment(
-                        start_time=result.get("start_time", 0),
-                        end_time=result.get("end_time", 0),
-                        language=alt.get("language", Language.EN),
-                        is_eos=alt.get("is_eos", False),
-                        is_final=is_final,
-                        attaches_to=result.get("attaches_to", ""),
-                        content=alt.get("content", ""),
-                        speaker=alt.get("speaker", None),
-                        confidence=alt.get("confidence", 1.0),
-                        result=result,
-                    )
-
-                    # Speaker filtering
-                    if fragment.speaker:
-                        # Drop `__XX__` speakers
-                        if re.match(r"^__[A-Z0-9_]{2,}__$", fragment.speaker):
-                            continue
-
-                        # Drop speakers not focussed on
-                        if (
-                            self._params.focus_mode == DiarizationFocusMode.IGNORE
-                            and self._params.focus_speakers
-                            and fragment.speaker not in self._params.focus_speakers
-                        ):
-                            continue
-
-                        # Drop ignored speakers
-                        if (
-                            self._params.ignore_speakers
-                            and fragment.speaker in self._params.ignore_speakers
-                        ):
-                            continue
-
-                    # Add the fragment
-                    fragments.append(fragment)
-
-            # Remove existing partials, as new partials and finals are provided
-            self._speech_fragments = [frag for frag in self._speech_fragments if frag.is_final]
-
-            # If the
-            result.add(AnnotationFlags.UPDATED_LCASE_COMPLETE)
-            logger.warning(result)
-
-            # Return if no new fragments and length of the existing data is unchanged
-            if not fragments and len(self._speech_fragments) == current_final_count:
-                return False
-
-            # Add the fragments to the speech data
-            self._speech_fragments.extend(fragments)
-
-            # Data was updated
-            return True
-
-    def _get_frames_from_fragments(self) -> list[SpeakerSegment]:
-        """Get speech data objects for the current fragment list.
-
-        Each speech fragments is grouped by contiguous speaker and then
-        returned as internal SpeakerSegment objects with the `speaker_id` field
-        set to the current speaker (string). An utterance may contain speech from
-        more than one speaker (e.g. S1, S2, S1, S3, ...), so they are kept
-        in strict order for the context of the conversation.
-
-        Returns:
-            List[SpeakerSegment]: The list of objects.
-        """
-        # Speaker groups
-        current_speaker: str | None = None
-        speaker_groups: list[list[SpeechFragment]] = [[]]
-
-        # Group by speakers
-        for frag in self._speech_fragments:
-            if frag.speaker != current_speaker:
-                current_speaker = frag.speaker
-                if speaker_groups[-1]:
-                    speaker_groups.append([])
-            speaker_groups[-1].append(frag)
-
-        # Create SpeakerFragments objects
-        segments: list[SpeakerSegment] = []
-        for group in speaker_groups:
-            sd = self._get_speaker_segment_from_fragment_group(group)
-            if sd:
-                segments.append(sd)
-
-        # Return the grouped SpeakerFragments objects
-        return segments
-
-    def _get_speaker_segment_from_fragment_group(
-        self,
-        group: list[SpeechFragment],
-    ) -> SpeakerSegment | None:
-        """Take a group of fragments and piece together into SpeakerSegment.
-
-        Each fragment for a given speaker is assembled into a string,
-        taking into consideration whether words are attached to the
-        previous or next word (notably punctuation). This ensures that
-        the text does not have extra spaces. This will also check for
-        any straggling punctuation from earlier utterances that should
-        be removed.
-
-        Args:
-            group: List of SpeechFragment objects.
-
-        Returns:
-            SpeakerSegment: The object for the group.
-        """
-        # Check for starting fragments that are attached to previous
-        if group and group[0].attaches_to == "previous":
-            group = group[1:]
-
-        # Check for trailing fragments that are attached to next
-        if group and group[-1].attaches_to == "next":
-            group = group[:-1]
-
-        # Check there are results
-        if not group:
-            return None
-
-        # Get the timing extremes
-        start_time = min(frag.start_time for frag in group)
-
-        # Timestamp
-        ts = (self._start_time + datetime.timedelta(seconds=start_time)).isoformat(
-            timespec="milliseconds"
-        )
-
-        # Determine if the speaker is considered active
-        is_active = True
-        if self._params.enable_diarization and self._params.focus_speakers:
-            is_active = group[0].speaker in self._params.focus_speakers
-
-        # Return the SpeakerSegment object
-        return SpeakerSegment(
-            speaker_id=group[0].speaker,
-            timestamp=ts,
-            language=group[0].language,
-            fragments=group,
-            is_active=is_active,
-        )
 
 
 def _get_endpoint_url(url: str) -> str:

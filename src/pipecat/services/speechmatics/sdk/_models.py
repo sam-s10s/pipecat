@@ -3,9 +3,10 @@
 #
 
 
+import datetime
 from dataclasses import dataclass, field
 from enum import Enum, IntFlag, auto
-from typing import Any
+from typing import Any, Optional
 
 __version__ = "0.1.0"
 
@@ -63,21 +64,21 @@ class AgentServerMessageType(str, Enum):
         SpeechStarted: Speech has started.
         SpeechEnded: Speech has ended.
         TurnDetected: A turn has been detected.
-        InterimSegment: An interim segment has been detected.
-        FinalSegment: A final segment has been detected.
+        InterimSegments: An interim segment has been detected.
+        FinalSegments: A final segment has been detected.
         SpeakersResult: Speakers result has been detected.
 
     Examples:
         >>> # Register event handlers for different message types
-        >>> @client.on(AgentServerMessageType.INTERIM_SEGMENT)
+        >>> @client.on(AgentServerMessageType.INTERIM_SEGMENTS)
         >>> def handle_interim(message):
-        ...     segment: SpeakerSegment = message['segment']
-        ...     print(f"Interim: {segment}")
+        ...     segments: list[SpeakerSegment] = message['segments']
+        ...     print(f"Interim: {segments}")
         >>>
-        >>> @client.on(AgentServerMessageType.FINAL_SEGMENT)
+        >>> @client.on(AgentServerMessageType.FINAL_SEGMENTS)
         >>> def handle_final(message):
-        ...     segment: SpeakerSegment = message['segment']
-        ...     print(f"Final: {segment}")
+        ...     segments: list[SpeakerSegment] = message['segments']
+        ...     print(f"Final: {segments}")
         >>>
         >>> @client.on(AgentServerMessageType.ERROR)
         >>> def handle_error(message):
@@ -97,50 +98,11 @@ class AgentServerMessageType(str, Enum):
 
     # Turn / segment messages
     TURN_DETECTED = "TurnDetected"
-    INTERIM_SEGMENT = "InterimSegment"
-    FINAL_SEGMENT = "FinalSegment"
+    INTERIM_SEGMENTS = "InterimSegments"
+    FINAL_SEGMENTS = "FinalSegments"
 
     # Speaker messages
     SPEAKERS_RESULT = "SpeakersResult"
-
-
-class AnnotationFlags(IntFlag):
-    """Flags to apply when processing speech / objects."""
-
-    # High-level updates
-    UPDATED_NONE = auto()
-    UPDATED_STRIPPED = auto()
-    UPDATED_LCASE = auto()
-    UPDATED_LCASE_STRIPPED = auto()
-    UPDATED_FULL = auto()
-    UPDATED_SPEAKERS = auto()
-    UPDATED_COMPLETE = auto()
-    UPDATED_LCASE_COMPLETE = auto()
-    UPDATED_STRIPPED_COMPLETE = auto()
-    UPDATED_LCASE_STRIPPED_COMPLETE = auto()
-    UPDATED_FINALS = auto()
-
-    # More granular details on the word content
-    HAS_PARTIAL = auto()
-    HAS_FINAL = auto()
-    STARTS_WITH_FINAL = auto()
-    ENDS_WITH_FINAL = auto()
-    HAS_EOS = auto()
-    ENDS_WITH_EOS = auto()
-    STARTS_WITH_SB = auto()
-    ENDS_WITH_SB = auto()
-    HAS_SB = auto()
-    ONLY_SB = auto()
-    HAS_DISFLUENCY = auto()
-    ENDS_WITH_DISFLUENCY = auto()
-    HIGH_DISFLUENCY_COUNT = auto()
-    VERY_SLOW_SPEAKER = auto()
-    SLOW_SPEAKER = auto()
-    FAST_SPEAKER = auto()
-    ONLY_PUNCTUATION = auto()
-    MULTIPLE_SPEAKERS = auto()
-    LOW_CONFIDENCE_WORDS = auto()
-    NO_TEXT = auto()
 
 
 class EndOfUtteranceMode(str, Enum):
@@ -184,6 +146,44 @@ class DiarizationKnownSpeaker:
     speaker_identifiers: list[str]
 
 
+class AnnotationFlags(IntFlag):
+    """Flags to apply when processing speech / objects."""
+
+    # High-level segment updates
+    NEW = auto()
+    UPDATED_FULL = auto()
+    UPDATED_FULL_LCASE = auto()
+    UPDATED_STRIPPED = auto()
+    UPDATED_STRIPPED_LCASE = auto()
+    UPDATED_FINALS = auto()
+    UPDATED_PARTIALS = auto()
+    UPDATED_SPEAKERS = auto()
+
+    # Content of segments
+    ONLY_ACTIVE_SPEAKERS = auto()
+    CONTAINS_INACTIVE_SPEAKERS = auto()
+
+    # More granular details on the word content
+    HAS_PARTIAL = auto()
+    HAS_FINAL = auto()
+    STARTS_WITH_FINAL = auto()
+    ENDS_WITH_FINAL = auto()
+    HAS_EOS = auto()
+    ENDS_WITH_EOS = auto()
+    HAS_DISFLUENCY = auto()
+    ENDS_WITH_DISFLUENCY = auto()
+    HIGH_DISFLUENCY_COUNT = auto()
+    VERY_SLOW_SPEAKER = auto()
+    SLOW_SPEAKER = auto()
+    FAST_SPEAKER = auto()
+    ONLY_PUNCTUATION = auto()
+    MULTIPLE_SPEAKERS = auto()
+    NO_TEXT = auto()
+
+    # End of utterance detection
+    END_OF_UTTERANCE = auto()
+
+
 @dataclass
 class AnnotationResult:
     """Processing result."""
@@ -204,6 +204,10 @@ class AnnotationResult:
         """Check if the object has all given flags."""
         return all(self.flags & flag == flag for flag in flags)
 
+    def any(self, *flags: AnnotationFlags) -> bool:
+        """Check if the object has any of the given flags."""
+        return any(self.flags & flag == flag for flag in flags)
+
     def add(self, flag: AnnotationFlags) -> None:
         """Add a flag to the object."""
         self.flags |= flag
@@ -211,6 +215,10 @@ class AnnotationResult:
     def remove(self, flag: AnnotationFlags) -> None:
         """Remove a flag from the object."""
         self.flags &= ~flag
+
+    def __eq__(self, other: int):
+        """Check if the object is equal to another."""
+        return self.flags == other
 
     def __str__(self):
         """String representation of the flags."""
@@ -228,6 +236,7 @@ class SpeechFragment:
         start_time: Start time of the fragment in seconds (from session start).
         end_time: End time of the fragment in seconds (from session start).
         language: Language of the fragment. Defaults to `en`.
+        _type: Type of the fragment. Defaults to `word`.
         is_eos: Whether the fragment is the end of a sentence. Defaults to `False`.
         is_final: Whether the fragment is the final fragment. Defaults to `False`.
         is_disfluency: Whether the fragment is a disfluency. Defaults to `False`.
@@ -243,6 +252,7 @@ class SpeechFragment:
     start_time: float
     end_time: float
     language: str = "en"
+    _type: str = "word"
     is_eos: bool = False
     is_final: bool = False
     is_disfluency: bool = False
@@ -275,6 +285,16 @@ class SpeakerSegment:
     fragments: list[SpeechFragment] = field(default_factory=list)
     annotation: AnnotationResult | None = None
 
+    @property
+    def start_time(self) -> float:
+        """Return the start time of the segment."""
+        return self.fragments[0].start_time
+
+    @property
+    def end_time(self) -> float:
+        """Return the end time of the segment."""
+        return self.fragments[-1].end_time
+
     def __str__(self):
         """Return a string representation of the object."""
         meta = {
@@ -286,7 +306,7 @@ class SpeakerSegment:
         }
         return f"SpeakerSegment({', '.join(f'{k}={v}' for k, v in meta.items())})"
 
-    def format_text(self, format: str | None = None) -> str:
+    def format_text(self, format: str | None = None, words_only: bool = False) -> str:
         """Wrap text with speaker ID in an optional f-string format.
 
         Supported format variables:
@@ -297,6 +317,7 @@ class SpeakerSegment:
 
         Args:
             format: Format to wrap the text with.
+            words_only: Whether to include only word fragments.
 
         Returns:
             str: The wrapped text.
@@ -304,8 +325,14 @@ class SpeakerSegment:
         # Cumulative contents
         content = ""
 
+        # Select fragments to include
+        if not words_only:
+            fragments = self.fragments
+        else:
+            fragments = [frag for frag in self.fragments if frag._type == "word"]
+
         # Assemble the text
-        for frag in self.fragments:
+        for frag in fragments:
             if content == "" or frag.attaches_to == "previous":
                 content += frag.content
             else:
@@ -344,3 +371,248 @@ class SpeakerSegment:
             "language": self.language,
             "result": [frag.result for frag in self.fragments],
         }
+
+
+@dataclass
+class SpeakerFragmentView:
+    """View for speaker fragments.
+
+    Parameters:
+        fragments: List of fragments.
+        base_time: Base time for the fragments.
+        focus_speakers: List of speakers to focus on or None.
+    """
+
+    fragments: list[SpeechFragment]
+    segments: list[SpeakerSegment]
+
+    def __init__(
+        self,
+        fragments: list[SpeechFragment],
+        base_time: datetime.datetime,
+        focus_speakers: list[str] | None = None,
+        annotate_segments: bool = True,
+    ):
+        self.fragments = fragments
+        self._base_time = base_time
+        self._focus_speakers = focus_speakers
+        self.segments = self._get_segments_from_fragments(annotate_segments=annotate_segments)
+
+    @property
+    def start_time(self) -> float:
+        return self.fragments[0].start_time
+
+    @property
+    def end_time(self) -> float:
+        return self.fragments[-1].end_time
+
+    @property
+    def final_count(self) -> int:
+        return sum(1 for frag in self.fragments if frag.is_final)
+
+    @property
+    def partial_count(self) -> int:
+        return sum(1 for frag in self.fragments if not frag.is_final)
+
+    @property
+    def segment_count(self) -> int:
+        return len(self.segments)
+
+    def format_text(
+        self, format: str = "|{speaker_id}|{text}|", separator: str = "", words_only: bool = False
+    ) -> str:
+        return separator.join(segment.format_text(format, words_only) for segment in self.segments)
+
+    def _get_segments_from_fragments(self, annotate_segments: bool = True) -> list[SpeakerSegment]:
+        # Speaker groups
+        current_speaker: str | None = None
+        speaker_groups: list[list[SpeechFragment]] = [[]]
+
+        # Group by speakers
+        for frag in self.fragments:
+            if frag.speaker != current_speaker:
+                current_speaker = frag.speaker
+                if speaker_groups[-1]:
+                    speaker_groups.append([])
+            speaker_groups[-1].append(frag)
+
+        # Create SpeakerFragments objects
+        segments: list[SpeakerSegment] = []
+        for group in speaker_groups:
+            sd = self._get_speaker_segment_from_fragment_group(group, annotate=annotate_segments)
+            if sd:
+                segments.append(sd)
+
+        # Return the grouped SpeakerFragments objects
+        return segments
+
+    def _get_speaker_segment_from_fragment_group(
+        self,
+        group: list[SpeechFragment],
+        annotate: bool = True,
+    ) -> SpeakerSegment | None:
+        """Take a group of fragments and piece together into SpeakerSegment.
+
+        Each fragment for a given speaker is assembled into a string,
+        taking into consideration whether words are attached to the
+        previous or next word (notably punctuation). This ensures that
+        the text does not have extra spaces. This will also check for
+        any straggling punctuation from earlier utterances that should
+        be removed.
+
+        Args:
+            group: List of SpeechFragment objects.
+            annotate: Whether to annotate the segment.
+
+        Returns:
+            SpeakerSegment: The object for the group.
+        """
+        # Check for starting fragments that are attached to previous
+        if group and group[0].attaches_to == "previous":
+            group = group[1:]
+
+        # Check for trailing fragments that are attached to next
+        if group and group[-1].attaches_to == "next":
+            group = group[:-1]
+
+        # Check there are results
+        if not group:
+            return None
+
+        # Get the timing extremes
+        start_time = min(frag.start_time for frag in group)
+
+        # Timestamp
+        ts = (self._base_time + datetime.timedelta(seconds=start_time)).isoformat(
+            timespec="milliseconds"
+        )
+
+        # Determine if the speaker is considered active
+        is_active = True
+        if self._focus_speakers:
+            is_active = group[0].speaker in self._focus_speakers
+
+        # New SpeakerSegment
+        segment = SpeakerSegment(
+            speaker_id=group[0].speaker,
+            timestamp=ts,
+            language=group[0].language,
+            fragments=group,
+            is_active=is_active,
+        )
+
+        # Annotate
+        if annotate:
+            segment.annotation = self._annotate_segment(segment)
+
+        # Return the SpeakerSegment object
+        return segment
+
+    def _annotate_segment(self, segment: SpeakerSegment) -> AnnotationResult:
+        """Annotate the segment.
+
+        This will annotate the segment with any additional information.
+        """
+        # Annotation result
+        result = AnnotationResult()
+
+        # Count of words
+        words = [frag for frag in segment.fragments if frag._type == "word"]
+        word_count = len(words)
+        if word_count == 0:
+            result.add(AnnotationFlags.NO_TEXT)
+
+        # Only punctuation
+        if all(frag.is_punctuation for frag in segment.fragments):
+            result.add(AnnotationFlags.ONLY_PUNCTUATION)
+
+        # Partials and finals
+        if any(not frag.is_final for frag in segment.fragments):
+            result.add(AnnotationFlags.HAS_PARTIAL)
+
+        # Finals
+        if any(frag.is_final for frag in segment.fragments):
+            result.add(AnnotationFlags.HAS_FINAL)
+        if segment.fragments[0].is_final:
+            result.add(AnnotationFlags.STARTS_WITH_FINAL)
+        if segment.fragments[-1].is_final:
+            result.add(AnnotationFlags.ENDS_WITH_FINAL)
+
+        # Disfluency
+        if any(frag.is_disfluency for frag in segment.fragments):
+            result.add(AnnotationFlags.HAS_DISFLUENCY)
+        if segment.fragments[0].is_disfluency:
+            result.add(AnnotationFlags.STARTS_WITH_DISFLUENCY)
+        if segment.fragments[-1].is_disfluency:
+            result.add(AnnotationFlags.ENDS_WITH_DISFLUENCY)
+
+        # Rate of speech
+        if len(words) > 1:
+            # Calculate the approximate words-per-minute (for last 5 words)
+            last_5_words = words[-5:]
+            wpm = len(last_5_words) / (
+                (last_5_words[-1].end_time - last_5_words[0].start_time) / 60.0
+            )
+
+            # Categorize the speaker
+            if wpm < 100:
+                result.add(AnnotationFlags.VERY_SLOW_SPEAKER)
+            elif wpm < 200:
+                result.add(AnnotationFlags.SLOW_SPEAKER)
+            elif wpm > 350:
+                result.add(AnnotationFlags.FAST_SPEAKER)
+
+        # End of sentence
+        if segment.fragments[-1].is_eos:
+            result.add(AnnotationFlags.ENDS_WITH_EOS)
+
+        # Return the annotation result
+        return result
+
+    def annotate(self, other: Optional["SpeakerFragmentView"]) -> AnnotationResult:
+        """Compare two SpeakerFragmentView objects and return the differences.
+
+        Args:
+            other: The other SpeakerFragmentView object to compare to or None.
+
+        Returns:
+            AnnotationResult: The annotation result.
+        """
+        # Result
+        result = AnnotationResult()
+
+        # If we have a previous view, compare it
+        if other and other.segment_count > 0:
+            # Compare full string
+            self_full_str: str = self.format_text()
+            other_full_str: str = other.format_text()
+            if self_full_str != other_full_str:
+                result.add(AnnotationFlags.UPDATED_FULL)
+            if self_full_str.lower() != other_full_str.lower():
+                result.add(AnnotationFlags.UPDATED_FULL_LCASE)
+
+            # Stripped string (without punctuation)
+            self_stripped_str: str = self.format_text(words_only=True)
+            other_stripped_str: str = other.format_text(words_only=True)
+            if self_stripped_str != other_stripped_str:
+                result.add(AnnotationFlags.UPDATED_STRIPPED)
+            if self_stripped_str.lower() != other_stripped_str.lower():
+                result.add(AnnotationFlags.UPDATED_STRIPPED_LCASE)
+
+            # Partials, finals and speakers
+            if self.final_count != other.final_count:
+                result.add(AnnotationFlags.UPDATED_FINALS)
+            if self.partial_count != other.partial_count:
+                result.add(AnnotationFlags.UPDATED_PARTIALS)
+            if self.segment_count != other.segment_count:
+                result.add(AnnotationFlags.UPDATED_SPEAKERS)
+
+        # Assume this is new
+        elif self.segment_count > 0:
+            result.add(AnnotationFlags.NEW)
+
+        # TODO - contents of LAST segment?
+
+        # Return the result
+        self.annotation = result
+        return result
