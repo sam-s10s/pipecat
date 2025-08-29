@@ -143,8 +143,6 @@ class VoiceAgentClient(AsyncClient):
         if self._emitter_task is not None:
             self._emitter_task.cancel()
 
-        print(view)
-
         # Emit interim results
         self.emit(AgentServerMessageType.INTERIM_SEGMENTS, {"segments": view.segments})
 
