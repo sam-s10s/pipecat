@@ -12,14 +12,9 @@ transcriptions with flags to indicate changes between messages, etc.
 """
 
 from speechmatics.rt import (
-    AsyncClient,
     AudioEncoding,
     AudioFormat,
-    ClientMessageType,
-    ConversationConfig,
     OperatingPoint,
-    ServerMessageType,
-    TranscriptionConfig,
 )
 
 from ._client import VoiceAgentClient
@@ -31,9 +26,11 @@ from ._models import (
     AnnotationResult,
     DiarizationFocusMode,
     DiarizationKnownSpeaker,
+    DiarizationSpeakerConfig,
     EndOfUtteranceMode,
     SpeakerSegment,
     SpeechFragment,
+    VoiceAgentConfig,
     __version__,
 )
 
@@ -41,10 +38,15 @@ __all__ = [
     # SDK
     "__version__",
     # Conversation config
+    "VoiceAgentConfig",
     "EndOfUtteranceMode",
+    "DiarizationSpeakerConfig",
     "DiarizationFocusMode",
     "AdditionalVocabEntry",
     "DiarizationKnownSpeaker",
+    "AudioEncoding",
+    "AudioFormat",
+    "OperatingPoint",
     # Transcription models
     "AnnotationFlags",
     "AnnotationResult",
@@ -54,13 +56,4 @@ __all__ = [
     "VoiceAgentClient",
     "AgentClientMessageType",
     "AgentServerMessageType",
-    # RT
-    "AsyncClient",
-    "AudioEncoding",
-    "AudioFormat",
-    "ClientMessageType",
-    "ConversationConfig",
-    "OperatingPoint",
-    "ServerMessageType",
-    "TranscriptionConfig",
 ]

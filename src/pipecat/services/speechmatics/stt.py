@@ -7,7 +7,6 @@
 """Speechmatics STT service integration."""
 
 import asyncio
-import datetime
 import os
 import warnings
 from typing import Any, AsyncGenerator
@@ -36,19 +35,17 @@ from pipecat.transcriptions.language import Language
 try:
     from .sdk import (
         AdditionalVocabEntry,
+        AgentClientMessageType,
         AgentServerMessageType,
         AudioEncoding,
-        AudioFormat,
-        ClientMessageType,
-        ConversationConfig,
         DiarizationFocusMode,
         DiarizationKnownSpeaker,
+        DiarizationSpeakerConfig,
         EndOfUtteranceMode,
         OperatingPoint,
         SpeakerSegment,
-        SpeechFragment,
-        TranscriptionConfig,
         VoiceAgentClient,
+        VoiceAgentConfig,
         __version__,
     )
 except ModuleNotFoundError as e:
@@ -88,10 +85,6 @@ class SpeechmaticsSTTService(STTService):
             enable_vad: Enable VAD to trigger end of utterance detection. This should be used
                 without any other VAD enabled in the agent and will emit the speaker started
                 and stopped frames. Defaults to False.
-
-            enable_partials: Enable partial transcriptions. When enabled, the STT engine will
-                emit partial word frames - useful for the visualisation of real-time transcription.
-                Defaults to True.
 
             max_delay: Maximum delay in seconds for transcription. This forces the STT engine to
                 speed up the processing of transcribed words and reduces the interval between partial
@@ -191,7 +184,6 @@ class SpeechmaticsSTTService(STTService):
 
         # Features
         enable_vad: bool = False
-        enable_partials: bool = True
         max_delay: float = 1.0
         end_of_utterance_silence_trigger: float = 0.5
         end_of_utterance_mode: EndOfUtteranceMode = EndOfUtteranceMode.FIXED
@@ -203,7 +195,7 @@ class SpeechmaticsSTTService(STTService):
         speaker_sensitivity: float = 0.5
         max_speakers: int | None = None
         speaker_active_format: str = "{text}"
-        speaker_passive_format: str = "{text}"
+        speaker_passive_format: str | None = None
         prefer_current_speaker: bool = False
         focus_speakers: list[str] = []
         ignore_speakers: list[str] = []
@@ -280,40 +272,26 @@ class SpeechmaticsSTTService(STTService):
         if not self._base_url:
             raise ValueError("Missing Speechmatics base URL")
 
-        # Default parameters
-        self._params = params or SpeechmaticsSTTService.InputParams()
-
         # Deprecation check
-        _check_deprecated_args(kwargs, self._params)
+        _check_deprecated_args(kwargs, params)
 
-        # Complete configuration objects
-        self._transcription_config: TranscriptionConfig = None
-        self._process_config()
-
-        # STT client
+        # Voice agent
         self._client: VoiceAgentClient | None = None
+        self._config: VoiceAgentConfig = self._prepare_config(sample_rate, params)
 
-        # Current utterance speech data
-        self._speech_fragments: list[SpeechFragment] = []
-        self._speech_fragments_lock: asyncio.Lock = asyncio.Lock()
+        # Framework options
+        self._enable_vad: bool = params.enable_vad
+        self._speaker_active_format: str = params.speaker_active_format
+        self._speaker_passive_format: str = (
+            params.speaker_passive_format or params.speaker_active_format
+        )
 
         # Speaking states
         self._is_speaking: bool = False
 
-        # Timing info
-        self._start_time: datetime.datetime | None = None
-        self._total_time: datetime.timedelta | None = None
-
         # Event handlers
-        if self._params.enable_diarization:
+        if params.enable_diarization:
             self._register_event_handler("on_speakers_result")
-
-        # EndOfUtterance fallback timer
-        self._finalize_timer: asyncio.Task | None = None
-
-        # Frame sender timer
-        self._transcription_frame_sender_wait_time: float = 0.005
-        self._transcription_frame_sender_timer: asyncio.Task | None = None
 
     async def start(self, frame: StartFrame):
         """Called when the new session starts."""
@@ -354,18 +332,22 @@ class SpeechmaticsSTTService(STTService):
             params: Update parameters for the service.
         """
         # Check possible
-        if not self._params.enable_diarization:
+        if not self._config.enable_diarization:
             raise ValueError("Diarization is not enabled")
 
-        # Update the diarization configuration
+        # Update the existing diarization configuration
         if params.focus_speakers is not None:
-            self._params.focus_speakers = params.focus_speakers
+            self._config.speaker_config.focus_speakers = params.focus_speakers
         if params.ignore_speakers is not None:
-            self._params.ignore_speakers = params.ignore_speakers
+            self._config.speaker_config.ignore_speakers = params.ignore_speakers
         if params.focus_mode is not None:
-            self._params.focus_mode = params.focus_mode
+            self._config.speaker_config.focus_mode = params.focus_mode
 
-    async def send_message(self, message: ClientMessageType | str, **kwargs: Any) -> None:
+        # Send the update
+        if self._client:
+            self._client.update_diarization_config(self._config.speaker_config)
+
+    async def send_message(self, message: AgentClientMessageType | str, **kwargs: Any) -> None:
         """Send a message to the STT service.
 
         This sends a message to the STT service via the underlying transport. If the session
@@ -388,65 +370,13 @@ class SpeechmaticsSTTService(STTService):
 
     async def _connect(self) -> None:
         """Connect to the STT service."""
-        # Create new STT RT client
-        self._client = VoiceAgentClient(
-            api_key=self._api_key,
-            url=_get_endpoint_url(self._base_url),
+        # Log the event
+        logger.debug(f"{self} Connecting to Speechmatics STT service")
+
+        # STT client
+        self._client: VoiceAgentClient = VoiceAgentClient(
+            api_key=self._api_key, url=_get_endpoint_url(self._base_url), config=self._config
         )
-
-        # # Log the event
-        # logger.debug(f"{self} Connecting to Speechmatics STT service")
-
-        # # Recognition started event
-        # @self._client.once(ServerMessageType.RECOGNITION_STARTED)
-        # def _evt_on_recognition_started(message: dict[str, Any]):
-        #     logger.debug(f"Recognition started (session: {message.get('id')})")
-        #     self._start_time = datetime.datetime.now(datetime.timezone.utc)
-
-        # # Partial transcript event
-        # if self._params.enable_partials:
-
-        #     @self._client.on(ServerMessageType.ADD_PARTIAL_TRANSCRIPT)
-        #     def _evt_on_partial_transcript(message: dict[str, Any]):
-        #         self._handle_transcript(message, is_final=False)
-
-        # # Final transcript event
-        # @self._client.on(ServerMessageType.ADD_TRANSCRIPT)
-        # def _evt_on_final_transcript(message: dict[str, Any]):
-        #     self._handle_transcript(message, is_final=True)
-
-        # # End of Utterance
-        # @self._client.on(ServerMessageType.END_OF_UTTERANCE)
-        # def _evt_on_end_of_utterance(message: dict[str, Any]):
-        #     if DEBUG_MESSAGES:
-        #         logger.debug(f"EndOfUtterance: {message}")
-        #     self._reset_finalize_timer()
-
-        # # Speaker Result
-        # if self._params.enable_diarization:
-
-        #     @self._client.on(ServerMessageType.SPEAKERS_RESULT)
-        #     def _evt_on_speakers_result(message: dict[str, Any]):
-        #         logger.debug("Speakers result received from STT")
-        #         asyncio.run_coroutine_threadsafe(
-        #             self._call_event_handler("on_speakers_result", message),
-        #             self.get_event_loop(),
-        #         )
-
-        # # Start session
-        # try:
-        #     await self._client.start_session(
-        #         transcription_config=self._transcription_config,
-        #         audio_format=AudioFormat(
-        #             encoding=self._params.audio_encoding,
-        #             sample_rate=self.sample_rate,
-        #             chunk_size=self._params.chunk_size,
-        #         ),
-        #     )
-        #     logger.debug(f"{self} Connected to Speechmatics STT service")
-        # except Exception as e:
-        #     logger.error(f"{self} Error connecting to Speechmatics: {e}")
-        #     self._client = None
 
         # Interim segment event
         @self._client.on(AgentServerMessageType.INTERIM_SEGMENTS)
@@ -462,15 +392,35 @@ class SpeechmaticsSTTService(STTService):
                 self._send_frames(message["segments"], finalized=True), self.get_event_loop()
             )
 
+        # VAD events
+        if self._enable_vad:
+
+            @self._client.on(AgentServerMessageType.SPEECH_STARTED)
+            def _evt_on_speech_started(message: dict[str, Any]):
+                logger.warning("Speech started")
+
+            @self._client.on(AgentServerMessageType.SPEECH_ENDED)
+            def _evt_on_speech_ended(message: dict[str, Any]):
+                logger.warning("Speech ended")
+
+        # Speaker Result
+        if self._config.enable_diarization:
+
+            @self._client.on(AgentServerMessageType.SPEAKERS_RESULT)
+            def _evt_on_speakers_result(message: dict[str, Any]):
+                logger.debug("Speakers result received from STT")
+                asyncio.run_coroutine_threadsafe(
+                    self._call_event_handler("on_speakers_result", message),
+                    self.get_event_loop(),
+                )
+
         # Connect to the client
-        await self._client.connect(
-            transcription_config=self._transcription_config,
-            audio_format=AudioFormat(
-                encoding=self._params.audio_encoding,
-                sample_rate=self.sample_rate,
-                chunk_size=self._params.chunk_size,
-            ),
-        )
+        try:
+            await self._client.connect()
+            logger.debug(f"{self} Connected to Speechmatics STT service")
+        except Exception as e:
+            logger.error(f"{self} Error connecting to Speechmatics: {e}")
+            self._client = None
 
     async def _disconnect(self) -> None:
         """Disconnect from the STT service."""
@@ -487,64 +437,41 @@ class SpeechmaticsSTTService(STTService):
         finally:
             self._client = None
 
-    def _process_config(self) -> None:
-        """Create a formatted STT transcription config.
+    def _prepare_config(self, sample_rate: int, params: InputParams | None = None) -> None:
+        """Parse the InputParams into VoiceAgentConfig."""
+        # Default config
+        if not params:
+            return VoiceAgentConfig()
 
-        Creates a transcription config object based on the service parameters. Aligns
-        with the Speechmatics RT API transcription config.
-        """
-        # Transcription config
-        transcription_config = TranscriptionConfig(
-            language=self._params.language,
-            domain=self._params.domain,
-            output_locale=self._params.output_locale,
-            operating_point=self._params.operating_point,
-            diarization="speaker" if self._params.enable_diarization else None,
-            enable_partials=self._params.enable_partials,
-            max_delay=self._params.max_delay,
+        # Create config
+        return VoiceAgentConfig(
+            # Service
+            operating_point=params.operating_point,
+            domain=params.domain,
+            language=_language_to_speechmatics_language(params.language),
+            output_locale=_locale_to_speechmatics_locale(params.language, params.output_locale),
+            # Features
+            max_delay=params.max_delay,
+            end_of_utterance_silence_trigger=params.end_of_utterance_silence_trigger,
+            end_of_utterance_mode=params.end_of_utterance_mode,
+            additional_vocab=params.additional_vocab,
+            punctuation_overrides=params.punctuation_overrides,
+            # Diarization
+            enable_diarization=params.enable_diarization,
+            speaker_sensitivity=params.speaker_sensitivity,
+            max_speakers=params.max_speakers,
+            prefer_current_speaker=params.prefer_current_speaker,
+            speaker_config=DiarizationSpeakerConfig(
+                focus_speakers=params.focus_speakers,
+                ignore_speakers=params.ignore_speakers,
+                focus_mode=params.focus_mode,
+            ),
+            known_speakers=params.known_speakers,
+            # Audio
+            sample_rate=sample_rate,
+            chunk_size=params.chunk_size,
+            audio_encoding=params.audio_encoding,
         )
-
-        # Additional vocab
-        if self._params.additional_vocab:
-            transcription_config.additional_vocab = [
-                {
-                    "content": e.content,
-                    "sounds_like": e.sounds_like,
-                }
-                for e in self._params.additional_vocab
-            ]
-
-        # Diarization
-        if self._params.enable_diarization:
-            dz_cfg = {}
-            if self._params.speaker_sensitivity is not None:
-                dz_cfg["speaker_sensitivity"] = self._params.speaker_sensitivity
-            if self._params.prefer_current_speaker is not None:
-                dz_cfg["prefer_current_speaker"] = self._params.prefer_current_speaker
-            if self._params.known_speakers:
-                dz_cfg["speakers"] = {
-                    s.label: s.speaker_identifiers for s in self._params.known_speakers
-                }
-            if self._params.max_speakers is not None:
-                dz_cfg["max_speakers"] = self._params.max_speakers
-            if dz_cfg:
-                transcription_config.speaker_diarization_config = dz_cfg
-
-        # End of Utterance (for fixed)
-        if (
-            self._params.end_of_utterance_silence_trigger
-            and self._params.end_of_utterance_mode == EndOfUtteranceMode.FIXED
-        ):
-            transcription_config.conversation_config = ConversationConfig(
-                end_of_utterance_silence_trigger=self._params.end_of_utterance_silence_trigger,
-            )
-
-        # Punctuation overrides
-        if self._params.punctuation_overrides:
-            transcription_config.punctuation_overrides = self._params.punctuation_overrides
-
-        # Set config
-        self._transcription_config = transcription_config
 
     async def _send_frames(self, segments: list[SpeakerSegment], finalized: bool = False) -> None:
         """Send frames to the pipeline.
@@ -567,23 +494,30 @@ class SpeechmaticsSTTService(STTService):
         downstream_frames: list[Frame] = []
 
         # If VAD is enabled, then send a speaking frame
-        if self._params.enable_vad and not self._is_speaking:
+        if self._enable_vad and not self._is_speaking:
             logger.debug("User started speaking")
             self._is_speaking = True
             upstream_frames += [BotInterruptionFrame()]
             downstream_frames += [UserStartedSpeakingFrame()]
 
+        # Create frame from segment
+        def attr_from_segment(segment: SpeakerSegment) -> dict[str, Any]:
+            return {
+                "text": segment.format_text(
+                    format=self._speaker_active_format
+                    if segment.is_active
+                    else self._speaker_passive_format
+                ),
+                "user_id": segment.speaker_id or "UU",
+                "timestamp": segment.timestamp,
+                "language": segment.language,
+            }
+
         # If final, then re-parse into TranscriptionFrame
         if finalized:
             # Transform frames
             downstream_frames += [
-                TranscriptionFrame(
-                    **segment._as_attributes(
-                        self._params.speaker_active_format,
-                        self._params.speaker_passive_format,
-                    )
-                )
-                for segment in segments
+                TranscriptionFrame(**attr_from_segment(segment)) for segment in segments
             ]
 
             # Log transcript(s)
@@ -592,20 +526,14 @@ class SpeechmaticsSTTService(STTService):
         # Return as interim results (unformatted)
         else:
             downstream_frames += [
-                InterimTranscriptionFrame(
-                    **segment._as_attributes(
-                        self._params.speaker_active_format,
-                        self._params.speaker_passive_format,
-                    )
-                )
-                for segment in segments
+                InterimTranscriptionFrame(**attr_from_segment(segment)) for segment in segments
             ]
 
             # Log transcript(s)
             logger.debug(f"Interim transcript: {[f.text for f in downstream_frames]}")
 
         # If VAD is enabled, then send a speaking frame
-        if self._params.enable_vad and self._is_speaking and finalized:
+        if self._enable_vad and self._is_speaking and finalized:
             logger.debug("User stopped speaking")
             self._is_speaking = False
             downstream_frames += [UserStoppedSpeakingFrame()]
@@ -772,7 +700,7 @@ def _check_deprecated_args(kwargs: dict, params: SpeechmaticsSTTService.InputPar
         ("domain", "domain"),
         ("output_locale", "output_locale"),
         ("output_locale_code", "output_locale"),
-        ("enable_partials", "enable_partials"),
+        ("enable_partials", None),
         ("max_delay", "max_delay"),
         ("chunk_size", "chunk_size"),
         ("audio_encoding", "audio_encoding"),
