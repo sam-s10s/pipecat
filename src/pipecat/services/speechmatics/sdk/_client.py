@@ -65,11 +65,16 @@ class VoiceAgentClient(AsyncClient):
 
         # Connection status
         self._is_connected: bool = False
+        self._is_ready_for_audio: bool = False
 
         # Timing info
         self._start_time: Optional[datetime.datetime] = None
-        self._total_time: int = 0
+        self._total_time: float = 0
         self._total_bytes: int = 0
+
+        # TTFT metrics
+        self._last_ttft_time: Optional[float] = None
+        self._last_ttft: int = 0
 
         # Time to disregard speech fragments before
         self._trim_before_time: float = 0.0
@@ -189,6 +194,7 @@ class VoiceAgentClient(AsyncClient):
         def _evt_on_recognition_started(message: dict[str, Any]):
             logger.debug(f"Recognition started (session: {message.get('id')})")
             self._start_time = datetime.datetime.now(datetime.timezone.utc)
+            self._is_ready_for_audio = True
 
         # Partial transcript event
         @self.on(ServerMessageType.ADD_PARTIAL_TRANSCRIPT)
@@ -252,6 +258,7 @@ class VoiceAgentClient(AsyncClient):
         try:
             await asyncio.wait_for(self.close(), timeout=5.0)
             self._is_connected = False
+            self._is_ready_for_audio = False
             self._stop_metrics_task()
         except asyncio.TimeoutError:
             logger.warning(f"{self} Timeout while closing Speechmatics client connection")
@@ -286,6 +293,10 @@ class VoiceAgentClient(AsyncClient):
             >>> audio_chunk = b""
             >>> await client.send_audio(audio_chunk)
         """
+        # Skip if not ready for audio
+        if not self._is_ready_for_audio:
+            return
+
         # Send to the AsyncClient
         await super().send_audio(payload)
 
@@ -302,6 +313,10 @@ class VoiceAgentClient(AsyncClient):
                 # Interval between emitting metrics
                 await asyncio.sleep(self._metrics_emitter_interval)
 
+                # Check if there are any listeners for AgentServerMessageType.METRICS
+                if not self.listeners(AgentServerMessageType.METRICS):
+                    break
+
                 # Calculations
                 time_s = round(self._total_time, 3)
 
@@ -312,6 +327,7 @@ class VoiceAgentClient(AsyncClient):
                         "total_time": time_s,
                         "total_time_str": time.strftime("%H:%M:%S", time.gmtime(time_s)),
                         "total_bytes": self._total_bytes,
+                        "last_ttft": self._last_ttft,
                     },
                 )
 
@@ -367,6 +383,36 @@ class VoiceAgentClient(AsyncClient):
 
         # Send frames after delay
         self._processor_task = asyncio.create_task(process_after_delay(self._processor_wait_time))
+
+    def _calculate_ttft(self, end_time: float) -> None:
+        """Calculate the time to first text.
+
+        The TTFT is calculated by taking the end time of the payload from the STT
+        engine and then calculating the difference between the total time of bytes
+        sent to the engine from the client.
+
+        Args:
+            end_time: The end time of the payload from the STT engine.
+        """
+        # Skip if no valid fragments
+        if not self._speech_fragments:
+            return
+
+        # Get start of the first fragment
+        start_time = self._speech_fragments[0].start_time
+
+        # Skip if no partial word or if we have already calculated the TTFT for this word
+        if start_time == self._last_ttft_time:
+            return
+
+        # Calculate the time difference (convert to ms)
+        self._last_ttft = round((self._total_time - end_time) * 1000)
+        self._last_ttft_time = start_time
+
+        # Debug
+        logger.debug(f"TTFT {self._total_time} - {start_time} = {self._last_ttft}")
+
+        # TODO - emit a TTFT event
 
     async def _add_speech_fragments(self, message: dict[str, Any], is_final: bool = False) -> bool:
         """Takes a new Partial or Final from the STT engine.
@@ -448,15 +494,25 @@ class VoiceAgentClient(AsyncClient):
             # Add the fragments to the speech data
             self._speech_fragments.extend(fragments)
 
+            # Update TTFT
+            if not is_final:
+                self._calculate_ttft(end_time=message.get("metadata", {}).get("end_time", 0))
+
             # Fragments available
             return len(self._speech_fragments) > 0
 
-    async def _process_speech_fragments(self) -> None:
+    async def _process_speech_fragments(
+        self, finalize: bool = False, emit_final_delay: Optional[float] = None
+    ) -> None:
         """Process the speech fragments.
 
         Compares the current speech fragments against the last set of speech fragments.
         When segments are emitted, they are then removed from the buffer of fragments
         so the next comparison is based on the remaining + new fragments.
+
+        Args:
+            finalize: Optional override to emit segments, even if no changes.
+            emit_final_delay: Optional delay before finalizing partial segments.
         """
         async with self._speech_fragments_lock:
             # Current transcription
@@ -475,41 +531,100 @@ class VoiceAgentClient(AsyncClient):
             )
 
             # Compare this against the previous transcript
-            result = current_view.annotate(last_view)
+            annotation_result = current_view.annotate(last_view)
 
-            # Delay before emitting
-            emit_final_delay: Optional[float] = None
+            # Emit segments
+            should_emit: bool = False
 
-            # Last active segment
-            last_active_segment_index = current_view.last_active_segment_index
-            last_active_segment = (
-                current_view.segments[last_active_segment_index]
-                if last_active_segment_index > -1
-                else None
-            )
+            # TODO - Consider a config option to split segments into smaller chunks for long transcripts?
 
-            # If this is new, then copy over the new data
-            if result.any(AnnotationFlags.NEW, AnnotationFlags.UPDATED_STRIPPED_LCASE):
-                """Process the annotation flags to determine how long before sending a final segment."""
-
-                # Last segment ends with EOS
-                if last_active_segment and last_active_segment.annotation.has(
-                    AnnotationFlags.ENDS_WITH_EOS
-                ):
+            # Force segments to be emitted
+            if finalize:
+                should_emit = True
+                if emit_final_delay is None:
                     emit_final_delay = 0.001
 
-                # Default
-                else:
-                    emit_final_delay = self._end_of_utterance_delay * 1.5
+            # Calculate the delay
+            else:
+                should_emit, emit_final_delay = self._calculate_final_delay(
+                    view=current_view, annotation=annotation_result
+                )
 
-            # If a delay has been set
-            if emit_final_delay is not None:
+            # Emit segments
+            if should_emit:
                 asyncio.create_task(
                     self._emit_segments(current_view, finalize_delay=emit_final_delay)
                 )
 
             # Copy the data
             self._last_speech_fragments = self._speech_fragments.copy()
+
+    def _calculate_final_delay(
+        self,
+        view: SpeakerFragmentView,
+        annotation: AnnotationResult,
+    ) -> Tuple(bool, float):
+        """Calculate the delay before finalizing segments.
+
+        Process the most recent segment and view to determine how long to delay before emitting
+        the segments to the client.
+
+        Args:
+            view: The speaker fragment view to emit segments from.
+            annotation: The annotation result to emit segments from.
+
+        Returns:
+            Tuple of (should_emit, emit_final_delay)
+        """
+        # Emit segments
+        emit_final_delay: Optional[float] = None
+        should_emit: bool = False
+
+        # Last active segment
+        last_active_segment_index = view.last_active_segment_index
+        last_active_segment = (
+            view.segments[last_active_segment_index] if last_active_segment_index > -1 else None
+        )
+
+        # If this is NEW or UPDATED_STRIPPED_LCASE
+        if annotation.any(AnnotationFlags.NEW, AnnotationFlags.UPDATED_STRIPPED_LCASE):
+            """Process the annotation flags to determine how long before sending a final segment."""
+
+            # Last segment ends with EOS, emit final immediately
+            if last_active_segment and last_active_segment.annotation.has(
+                AnnotationFlags.ENDS_WITH_EOS
+            ):
+                emit_final_delay = 0.001
+
+            # Fallback when using FIXED
+            elif self._end_of_utterance_mode == EndOfUtteranceMode.FIXED:
+                emit_final_delay = self._end_of_utterance_delay * 1.5
+
+            # Timer for when ADAPTIVE
+            elif self._end_of_utterance_mode == EndOfUtteranceMode.ADAPTIVE:
+                emit_final_delay = self._end_of_utterance_delay
+
+            # Emit segments
+            should_emit = True
+
+        # TODO - Other checks / end of turn detection
+
+        # Return the result
+        return should_emit, emit_final_delay
+
+    def finalize_segments(self, emit_final_delay: Optional[float] = None):
+        """Finalize segments.
+
+        This function will emit segments in the buffer without any further checks
+        on the contents of the segments. It should only be used if the end of utterance
+        mode has been set to `NONE`.
+
+        Args:
+            emit_final_delay: Optional delay before finalizing partial segments.
+        """
+        asyncio.create_task(
+            self._process_speech_fragments(finalize=True, emit_final_delay=emit_final_delay)
+        )
 
     async def _emit_segments(
         self, view: SpeakerFragmentView, finalize_delay: Optional[float] = None
