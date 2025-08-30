@@ -487,6 +487,7 @@ class VoiceAgentClient(AsyncClient):
             # Evaluate for VAD (only done on partials)
             if not is_final:
                 self._vad_evaluation(fragments)
+                self._calculate_ttft()
 
             # Remove existing partials, as new partials and finals are provided
             self._speech_fragments = [frag for frag in self._speech_fragments if frag.is_final]
