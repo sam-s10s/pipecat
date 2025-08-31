@@ -10,12 +10,12 @@ import asyncio
 import os
 import warnings
 from typing import Any, AsyncGenerator
-from urllib.parse import urlencode
 
 from dotenv import load_dotenv
 from loguru import logger
 from pydantic import BaseModel
 
+from pipecat import __version__ as pipecat_version
 from pipecat.frames.frames import (
     BotInterruptionFrame,
     CancelFrame,
@@ -48,7 +48,6 @@ try:
         SpeakerVADStatus,
         VoiceAgentClient,
         VoiceAgentConfig,
-        __version__,
     )
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
@@ -403,7 +402,10 @@ class SpeechmaticsSTTService(STTService):
 
         # STT client
         self._client: VoiceAgentClient = VoiceAgentClient(
-            api_key=self._api_key, url=_get_endpoint_url(self._base_url), config=self._config
+            api_key=self._api_key,
+            url=self._base_url,
+            app=f"pipecat/{pipecat_version}/",
+            config=self._config,
         )
 
         # Interim segment event
@@ -620,22 +622,6 @@ class SpeechmaticsSTTService(STTService):
         await asyncio.sleep(ttfb / 1000.0)
         await self.stop_ttfb_metrics()
         await self.stop_processing_metrics()
-
-
-def _get_endpoint_url(url: str) -> str:
-    """Format the endpoint URL with the SDK and app versions.
-
-    Args:
-        url: The base URL for the endpoint.
-
-    Returns:
-        str: The formatted endpoint URL.
-    """
-    query_params = dict()
-    query_params["sm-app"] = f"pipecat/{__version__}"
-    query = urlencode(query_params)
-
-    return f"{url}?{query}"
 
 
 def _language_to_speechmatics_language(language: Language) -> str:

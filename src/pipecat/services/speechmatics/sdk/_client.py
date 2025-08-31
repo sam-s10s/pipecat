@@ -10,6 +10,7 @@ import os
 import re
 import time
 from typing import Any, Optional
+from urllib.parse import urlencode
 
 from speechmatics.rt import (
     AsyncClient,
@@ -18,8 +19,10 @@ from speechmatics.rt import (
     ServerMessageType,
     TranscriptionConfig,
 )
+from speechmatics.rt import (
+    __version__ as speechmatics_version,
+)
 
-from ._logging import get_logger
 from ._models import (
     AgentServerMessageType,
     AnnotationFlags,
@@ -29,7 +32,13 @@ from ._models import (
     SpeakerVADStatus,
     SpeechFragment,
     VoiceAgentConfig,
+    __version__,
 )
+
+try:
+    from loguru import logger
+except ModuleNotFoundError as e:
+    from ._logging import get_logger
 
 DEBUG_MORE = os.getenv("SPEECHMATICS_DEBUG_MORE", "0").lower() in ["1", "true"]
 DEBUG_MESSAGES = os.getenv("SPEECHMATICS_DEBUG_MESSAGES", "0").lower() in ["1", "true"]
@@ -48,6 +57,7 @@ class VoiceAgentClient(AsyncClient):
         self,
         api_key: Optional[str] = None,
         url: Optional[str] = None,
+        app: Optional[str] = None,
         config: Optional[VoiceAgentConfig] = None,
     ):
         """Initialize the Voice Agent client.
@@ -56,12 +66,14 @@ class VoiceAgentClient(AsyncClient):
             api_key: Speechmatics API key. If None, uses SPEECHMATICS_API_KEY env var.
             url: REST API endpoint URL. If None, uses SPEECHMATICS_BATCH_URL env var
                  or defaults to production endpoint.
+            app: Optional application name to use in the endpoint URL.
             config: Voice agent configuration.
         """
-        super().__init__(api_key=api_key, url=url)
+        # Initialize the client
+        super().__init__(api_key=api_key, url=self._get_endpoint_url(url, app))
 
         # Logger
-        self._logger = get_logger(__name__)
+        self._logger = logger or get_logger(__name__)
 
         # Internal configuration
         self._transcription_config: Optional[TranscriptionConfig] = None
@@ -811,3 +823,21 @@ class VoiceAgentClient(AsyncClient):
         # Reset the current speaker
         if not self._is_speaking:
             self._current_speaker = None
+
+    def _get_endpoint_url(self, url: str, app: Optional[str] = None) -> str:
+        """Format the endpoint URL with the SDK and app versions.
+
+        Args:
+            url: The base URL for the endpoint.
+            app: The application name to use in the endpoint URL.
+
+        Returns:
+        str: The formatted endpoint URL.
+        """
+        query_params = dict()
+        query_params["sm-app"] = app or f"voice-sdk/{__version__}"
+        query_params["sm-rt-sdk"] = f"{speechmatics_version}"
+        query_params["sm-voice-sdk"] = f"{__version__}"
+        query = urlencode(query_params)
+
+        return f"{url}?{query}"
