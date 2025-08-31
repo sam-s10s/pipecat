@@ -389,7 +389,7 @@ class SpeechmaticsSTTService(STTService):
         try:
             payload = {"message": message}
             payload.update(kwargs)
-            logger.debug(f"{self} Sending message to STT: {payload}")
+            logger.debug(f"{self} sending message to STT: {payload}")
             asyncio.run_coroutine_threadsafe(
                 self._client.send_message(payload), self.get_event_loop()
             )
@@ -399,7 +399,7 @@ class SpeechmaticsSTTService(STTService):
     async def _connect(self) -> None:
         """Connect to the STT service."""
         # Log the event
-        logger.debug(f"{self} Connecting to Speechmatics STT service")
+        logger.debug(f"{self} connecting to Speechmatics STT service")
 
         # STT client
         self._client: VoiceAgentClient = VoiceAgentClient(
@@ -440,7 +440,7 @@ class SpeechmaticsSTTService(STTService):
 
             @self._client.on(AgentServerMessageType.SPEAKERS_RESULT)
             def _evt_on_speakers_result(message: dict[str, Any]):
-                logger.debug(f"{self} Speakers result received from STT")
+                logger.debug(f"{self} speakers result received from STT")
                 asyncio.run_coroutine_threadsafe(
                     self._call_event_handler("on_speakers_result", message),
                     self.get_event_loop(),
@@ -461,22 +461,22 @@ class SpeechmaticsSTTService(STTService):
         # Connect to the client
         try:
             await self._client.connect()
-            logger.debug(f"{self} Connected to Speechmatics STT service")
+            logger.debug(f"{self} connected to Speechmatics STT service")
         except Exception as e:
-            logger.error(f"{self} Error connecting to Speechmatics: {e}")
+            logger.error(f"{self} error connecting to Speechmatics: {e}")
             self._client = None
 
     async def _disconnect(self) -> None:
         """Disconnect from the STT service."""
         # Disconnect the client
-        logger.debug(f"{self} Disconnecting from Speechmatics STT service")
+        logger.debug(f"{self} disconnecting from Speechmatics STT service")
         try:
             if self._client:
                 await self._client.disconnect()
         except asyncio.TimeoutError:
-            logger.warning(f"{self} Timeout while closing Speechmatics client connection")
+            logger.warning(f"{self} timeout while closing Speechmatics client connection")
         except Exception as e:
-            logger.error(f"{self} Error closing Speechmatics client: {e}")
+            logger.error(f"{self} error closing Speechmatics client: {e}")
         finally:
             self._client = None
 
@@ -548,14 +548,14 @@ class SpeechmaticsSTTService(STTService):
             frames += [TranscriptionFrame(**attr_from_segment(segment)) for segment in segments]
             finalized_text = "|".join([s.format_text() for s in segments])
             await self._trace_transcription(finalized_text, True, segments[0].language)
-            logger.debug(f"{self} Finalized transcript: {finalized_text}")
+            logger.debug(f"{self} finalized transcript: {finalized_text}")
 
         # Return as interim results (unformatted)
         else:
             frames += [
                 InterimTranscriptionFrame(**attr_from_segment(segment)) for segment in segments
             ]
-            logger.debug(f"{self} Interim transcript: {[f.text for f in frames]}")
+            logger.debug(f"{self} interim transcript: {[f.text for f in frames]}")
 
         # Send the DOWNSTREAM frames
         for frame in frames:
@@ -581,14 +581,14 @@ class SpeechmaticsSTTService(STTService):
 
         # If VAD is enabled, then send a speaking frame
         if speaking:
-            logger.debug(f"{self} User started speaking")
+            logger.debug(f"{self} user started speaking")
             self._is_speaking = True
             upstream_frames += [BotInterruptionFrame()]
             downstream_frames += [UserStartedSpeakingFrame()]
 
         # User has stopped speaking
         else:
-            logger.debug(f"{self} User stopped speaking")
+            logger.debug(f"{self} user stopped speaking")
             self._is_speaking = False
             downstream_frames += [UserStoppedSpeakingFrame()]
 
@@ -740,7 +740,7 @@ def _locale_to_speechmatics_locale(language_code: str, locale: Language) -> str 
 
     # Fail if locale is not supported
     if not result:
-        logger.warning(f"{self} Unsupported output locale: {locale}, defaulting to {language_code}")
+        logger.warning(f"{self} unsupported output locale: {locale}, defaulting to {language_code}")
 
     # Return the locale code
     return result
