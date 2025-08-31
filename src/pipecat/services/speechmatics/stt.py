@@ -45,6 +45,7 @@ try:
         EndOfUtteranceMode,
         OperatingPoint,
         SpeakerSegment,
+        SpeakerVADStatus,
         VoiceAgentClient,
         VoiceAgentConfig,
         __version__,
@@ -388,12 +389,12 @@ class SpeechmaticsSTTService(STTService):
         try:
             payload = {"message": message}
             payload.update(kwargs)
-            logger.debug(f"Sending message to STT: {payload}")
+            logger.debug(f"{self} Sending message to STT: {payload}")
             asyncio.run_coroutine_threadsafe(
                 self._client.send_message(payload), self.get_event_loop()
             )
         except Exception as e:
-            raise RuntimeError(f"error sending message to STT: {e}")
+            raise RuntimeError(f"{self} error sending message to STT: {e}")
 
     async def _connect(self) -> None:
         """Connect to the STT service."""
@@ -423,19 +424,23 @@ class SpeechmaticsSTTService(STTService):
         if self._enable_vad:
 
             @self._client.on(AgentServerMessageType.SPEECH_STARTED)
-            def _evt_on_speech_started(message: dict[str, Any]):
-                logger.warning(f"Speech started: {message}")
+            def _evt_on_speech_started(status: SpeakerVADStatus):
+                asyncio.run_coroutine_threadsafe(
+                    self._send_vad_frame(speaking=status.is_active), self.get_event_loop()
+                )
 
             @self._client.on(AgentServerMessageType.SPEECH_ENDED)
-            def _evt_on_speech_ended(message: dict[str, Any]):
-                logger.warning(f"Speech ended: {message}")
+            def _evt_on_speech_ended(status: SpeakerVADStatus):
+                asyncio.run_coroutine_threadsafe(
+                    self._send_vad_frame(speaking=status.is_active), self.get_event_loop()
+                )
 
         # Speaker Result
         if self._config.enable_diarization:
 
             @self._client.on(AgentServerMessageType.SPEAKERS_RESULT)
             def _evt_on_speakers_result(message: dict[str, Any]):
-                logger.debug("Speakers result received from STT")
+                logger.debug(f"{self} Speakers result received from STT")
                 asyncio.run_coroutine_threadsafe(
                     self._call_event_handler("on_speakers_result", message),
                     self.get_event_loop(),
@@ -514,11 +519,6 @@ class SpeechmaticsSTTService(STTService):
     async def _send_frames(self, segments: list[SpeakerSegment], finalized: bool = False) -> None:
         """Send frames to the pipeline.
 
-        Send speech frames to the pipeline. If VAD is enabled, then this will
-        also send an interruption and user started speaking frames. When the
-        final transcript is received, then this will send a user stopped speaking
-        and stop interruption frames.
-
         Args:
             segments: The segments to send.
             finalized: Whether the data is final or partial.
@@ -528,15 +528,7 @@ class SpeechmaticsSTTService(STTService):
             return
 
         # Frames to send
-        upstream_frames: list[Frame] = []
-        downstream_frames: list[Frame] = []
-
-        # If VAD is enabled, then send a speaking frame
-        if self._enable_vad and not self._is_speaking:
-            logger.debug("User started speaking")
-            self._is_speaking = True
-            upstream_frames += [BotInterruptionFrame()]
-            downstream_frames += [UserStartedSpeakingFrame()]
+        frames: list[Frame] = []
 
         # Create frame from segment
         def attr_from_segment(segment: SpeakerSegment) -> dict[str, Any]:
@@ -553,29 +545,50 @@ class SpeechmaticsSTTService(STTService):
 
         # If final, then re-parse into TranscriptionFrame
         if finalized:
-            # Create finalized frames
-            downstream_frames += [
-                TranscriptionFrame(**attr_from_segment(segment)) for segment in segments
-            ]
-
-            # Trace finalized transcript
+            frames += [TranscriptionFrame(**attr_from_segment(segment)) for segment in segments]
             finalized_text = "|".join([s.format_text() for s in segments])
             await self._trace_transcription(finalized_text, True, segments[0].language)
-            logger.debug(f"Finalized transcript: {finalized_text}")
+            logger.debug(f"{self} Finalized transcript: {finalized_text}")
 
         # Return as interim results (unformatted)
         else:
-            # Create interim frames
-            downstream_frames += [
+            frames += [
                 InterimTranscriptionFrame(**attr_from_segment(segment)) for segment in segments
             ]
+            logger.debug(f"{self} Interim transcript: {[f.text for f in frames]}")
 
-            # Debug interim transcript
-            logger.debug(f"Interim transcript: {[f.text for f in downstream_frames]}")
+        # Send the DOWNSTREAM frames
+        for frame in frames:
+            await self.push_frame(frame)
+
+    async def _send_vad_frame(self, speaking: bool = False) -> None:
+        """Send VAD frame to the pipeline.
+
+        This will emit a UserStartedSpeakingFrame or UserStoppedSpeakingFrame
+        depending on the value of `speaking`. It will also emit a BotInterruptionFrame
+        for the pipeline to handle interruption of the bot.
+
+        Args:
+            speaking: Whether the user is speaking or not.
+        """
+        # Skip if VAD not enabled
+        if not self._enable_vad:
+            return
+
+        # Frames to send
+        upstream_frames: list[Frame] = []
+        downstream_frames: list[Frame] = []
 
         # If VAD is enabled, then send a speaking frame
-        if self._enable_vad and self._is_speaking and finalized:
-            logger.debug("User stopped speaking")
+        if speaking:
+            logger.debug(f"{self} User started speaking")
+            self._is_speaking = True
+            upstream_frames += [BotInterruptionFrame()]
+            downstream_frames += [UserStartedSpeakingFrame()]
+
+        # User has stopped speaking
+        else:
+            logger.debug(f"{self} User stopped speaking")
             self._is_speaking = False
             downstream_frames += [UserStoppedSpeakingFrame()]
 
@@ -727,7 +740,7 @@ def _locale_to_speechmatics_locale(language_code: str, locale: Language) -> str 
 
     # Fail if locale is not supported
     if not result:
-        logger.warning(f"Unsupported output locale: {locale}, defaulting to {language_code}")
+        logger.warning(f"{self} Unsupported output locale: {locale}, defaulting to {language_code}")
 
     # Return the locale code
     return result

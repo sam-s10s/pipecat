@@ -29,6 +29,7 @@ from ._models import (
     DiarizationSpeakerConfig,
     EndOfUtteranceMode,
     SpeakerSegment,
+    SpeakerVADStatus,
     SpeechFragment,
     VoiceAgentConfig,
     __version__,
@@ -52,6 +53,8 @@ __all__ = [
     "AnnotationResult",
     "SpeakerSegment",
     "SpeechFragment",
+    # Events
+    "SpeakerVADStatus",
     # Client
     "VoiceAgentClient",
     "AgentClientMessageType",
