@@ -316,7 +316,10 @@ class SpeechmaticsSTTService(STTService):
             frame: Frame to process.
             direction: Direction of frame processing.
         """
+        # Forward to parent
         await super().process_frame(frame, direction)
+
+        # TODO - process certain frames
         # if isinstance(frame, UserStartedSpeakingFrame):
         #     await self.start_ttfb_metrics()
         # elif isinstance(frame, UserStoppedSpeakingFrame):
@@ -436,9 +439,16 @@ class SpeechmaticsSTTService(STTService):
                 )
 
         # Metrics
-        @self._client.on(AgentServerMessageType.METRICS)
-        def _evt_on_metrics(message: dict[str, Any]):
-            logger.debug(f"Metrics received from STT: {message}")
+        # @self._client.on(AgentServerMessageType.METRICS)
+        # def _evt_on_metrics(message: dict[str, Any]):
+        #     logger.debug(f"Metrics received from STT: {message}")
+
+        # TTFB Metrics
+        @self._client.on(AgentServerMessageType.TTFB_METRICS)
+        def _evt_on_ttfb_metrics(message: dict[str, Any]):
+            asyncio.run_coroutine_threadsafe(
+                self._emit_ttfb_metrics(message.get("ttfb")), self.get_event_loop()
+            )
 
         # Connect to the client
         try:
@@ -581,6 +591,19 @@ class SpeechmaticsSTTService(STTService):
             True, as Deepgram service supports metrics generation.
         """
         return True
+
+    async def _emit_ttfb_metrics(self, ttfb: int) -> None:
+        """Create TTFB metrics.
+
+        The TTFB is the miliseconds between the person speaking and the STT
+        engine emitting the first partial. This is only calculated at the
+        start of an utterance.
+        """
+        await self.start_processing_metrics()
+        await self.start_ttfb_metrics()
+        await asyncio.sleep(ttfb / 1000.0)
+        await self.stop_ttfb_metrics()
+        await self.stop_processing_metrics()
 
 
 def _get_endpoint_url(url: str) -> str:

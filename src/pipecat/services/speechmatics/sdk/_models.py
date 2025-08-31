@@ -277,7 +277,7 @@ class AgentServerMessageType(str, Enum):
 
     # Metrics
     METRICS = "Metrics"
-    TTFT_METRICS = "TTFTMetrics"
+    TTFB_METRICS = "TTFBMetrics"
     SPEAKER_METRICS = "SpeakerMetrics"
 
 

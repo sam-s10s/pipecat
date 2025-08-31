@@ -72,9 +72,9 @@ class VoiceAgentClient(AsyncClient):
         self._total_time: float = 0
         self._total_bytes: int = 0
 
-        # TTFT metrics
-        self._last_ttft_time: Optional[float] = None
-        self._last_ttft: int = 0
+        # TTFB metrics
+        self._last_ttfb_time: Optional[float] = None
+        self._last_ttfb: int = 0
 
         # Time to disregard speech fragments before
         self._trim_before_time: float = 0.0
@@ -327,7 +327,7 @@ class VoiceAgentClient(AsyncClient):
                         "total_time": time_s,
                         "total_time_str": time.strftime("%H:%M:%S", time.gmtime(time_s)),
                         "total_bytes": self._total_bytes,
-                        "last_ttft": self._last_ttft,
+                        "last_ttfb": self._last_ttfb,
                     },
                 )
 
@@ -384,10 +384,10 @@ class VoiceAgentClient(AsyncClient):
         # Send frames after delay
         self._processor_task = asyncio.create_task(process_after_delay(self._processor_wait_time))
 
-    def _calculate_ttft(self, end_time: float) -> None:
+    def _calculate_ttfb(self, end_time: float) -> None:
         """Calculate the time to first text.
 
-        The TTFT is calculated by taking the end time of the payload from the STT
+        The TTFB is calculated by taking the end time of the payload from the STT
         engine and then calculating the difference between the total time of bytes
         sent to the engine from the client.
 
@@ -401,18 +401,32 @@ class VoiceAgentClient(AsyncClient):
         # Get start of the first fragment
         start_time = self._speech_fragments[0].start_time
 
-        # Skip if no partial word or if we have already calculated the TTFT for this word
-        if start_time == self._last_ttft_time:
+        # Skip if no partial word or if we have already calculated the TTFB for this word
+        if start_time == self._last_ttfb_time:
             return
 
         # Calculate the time difference (convert to ms)
-        self._last_ttft = round((self._total_time - end_time) * 1000)
-        self._last_ttft_time = start_time
+        self._last_ttfb = round((self._total_time - end_time) * 1000)
+        self._last_ttfb_time = start_time
 
         # Debug
-        logger.debug(f"TTFT {self._total_time} - {start_time} = {self._last_ttft}")
+        logger.debug(f"TTFB {self._total_time} - {start_time} = {self._last_ttfb}")
 
-        # TODO - emit a TTFT event
+        # Skip if no listeners
+        if not self.listeners(AgentServerMessageType.TTFB_METRICS):
+            return
+
+        # Emit the TTFB
+        async def emit_ttfb() -> None:
+            self.emit(
+                AgentServerMessageType.TTFB_METRICS,
+                {
+                    "ttfb": self._last_ttfb,
+                },
+            )
+
+        # Trigger the task
+        asyncio.create_task(emit_ttfb())
 
     async def _add_speech_fragments(self, message: dict[str, Any], is_final: bool = False) -> bool:
         """Takes a new Partial or Final from the STT engine.
@@ -487,7 +501,6 @@ class VoiceAgentClient(AsyncClient):
             # Evaluate for VAD (only done on partials)
             if not is_final:
                 self._vad_evaluation(fragments)
-                self._calculate_ttft()
 
             # Remove existing partials, as new partials and finals are provided
             self._speech_fragments = [frag for frag in self._speech_fragments if frag.is_final]
@@ -495,9 +508,9 @@ class VoiceAgentClient(AsyncClient):
             # Add the fragments to the speech data
             self._speech_fragments.extend(fragments)
 
-            # Update TTFT
+            # Update TTFB
             if not is_final:
-                self._calculate_ttft(end_time=message.get("metadata", {}).get("end_time", 0))
+                self._calculate_ttfb(end_time=message.get("metadata", {}).get("end_time", 0))
 
             # Fragments available
             return len(self._speech_fragments) > 0
