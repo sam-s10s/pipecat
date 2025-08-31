@@ -11,7 +11,6 @@ import re
 import time
 from typing import Any, Optional
 
-from loguru import logger
 from speechmatics.rt import (
     AsyncClient,
     AudioFormat,
@@ -20,6 +19,7 @@ from speechmatics.rt import (
     TranscriptionConfig,
 )
 
+from ._logging import get_logger
 from ._models import (
     AgentServerMessageType,
     AnnotationFlags,
@@ -59,6 +59,9 @@ class VoiceAgentClient(AsyncClient):
             config: Voice agent configuration.
         """
         super().__init__(api_key=api_key, url=url)
+
+        # Logger
+        self._logger = get_logger(__name__)
 
         # Internal configuration
         self._transcription_config: Optional[TranscriptionConfig] = None
@@ -195,7 +198,7 @@ class VoiceAgentClient(AsyncClient):
         # Recognition started event
         @self.once(ServerMessageType.RECOGNITION_STARTED)
         def _evt_on_recognition_started(message: dict[str, Any]):
-            logger.debug(f"Recognition started (session: {message.get('id')})")
+            self._logger.debug(f"Recognition started (session: {message.get('id')})")
             self._start_time = datetime.datetime.now(datetime.timezone.utc)
             self._is_ready_for_audio = True
 
@@ -214,7 +217,7 @@ class VoiceAgentClient(AsyncClient):
         # if self._end_of_utterance_mode == EndOfUtteranceMode.FIXED:
         #     @self.on(ServerMessageType.END_OF_UTTERANCE)
         #     def _evt_on_end_of_utterance(message: dict[str, Any]):
-        #         logger.warning("End of utterance detected - **TODO**")
+        #         self._logger.warning("End of utterance detected - **TODO**")
 
         # End of Transcript
         @self.on(ServerMessageType.END_OF_TRANSCRIPT)
@@ -244,11 +247,7 @@ class VoiceAgentClient(AsyncClient):
             self._is_connected = True
             self._start_metrics_task()
         except Exception as e:
-            logger.error(f"Exception: {e}")
-            self.emit(
-                AgentServerMessageType.ERROR,
-                {"reason": "Unable to connect to API", "error": str(e)},
-            )
+            self._logger.error(f"Exception: {e}")
             raise
 
     async def disconnect(self) -> None:
@@ -260,19 +259,16 @@ class VoiceAgentClient(AsyncClient):
         # Disconnect from API
         try:
             await asyncio.wait_for(self.close(), timeout=5.0)
+        except asyncio.TimeoutError:
+            self._logger.warning(f"{self} Timeout while closing Speechmatics client connection")
+            raise
+        except Exception as e:
+            self._logger.error(f"{self} Error closing Speechmatics client: {e}")
+            raise
+        finally:
             self._is_connected = False
             self._is_ready_for_audio = False
             self._stop_metrics_task()
-        except asyncio.TimeoutError:
-            logger.warning(f"{self} Timeout while closing Speechmatics client connection")
-        except Exception as e:
-            logger.error(f"{self} Error closing Speechmatics client: {e}")
-        finally:
-            self.emit(
-                AgentServerMessageType.ERROR,
-                {"reason": "Unable to disconnect from API", "error": str(e)},
-            )
-            raise
 
     def update_diarization_config(self, config: DiarizationSpeakerConfig) -> None:
         """Update the diarization configuration.
@@ -365,7 +361,7 @@ class VoiceAgentClient(AsyncClient):
         """
         # Debug payloads
         if DEBUG_MESSAGES:
-            logger.debug(f"{message['message']}(message={message}, is_final={is_final})")
+            self._logger.debug(f"{message['message']}(message={message}, is_final={is_final})")
 
         # Add the speech fragments
         fragments_available = await self._add_speech_fragments(
@@ -416,7 +412,7 @@ class VoiceAgentClient(AsyncClient):
         self._last_ttfb_time = start_time
 
         # Debug
-        logger.debug(f"TTFB {self._total_time} - {start_time} = {self._last_ttfb}")
+        self._logger.debug(f"TTFB {self._total_time} - {start_time} = {self._last_ttfb}")
 
         # Skip if no listeners
         if not self.listeners(AgentServerMessageType.TTFB_METRICS):
@@ -687,7 +683,9 @@ class VoiceAgentClient(AsyncClient):
 
                 # Log if some segments are missing
                 if segments_held_back:
-                    logger.debug(f"Holding segments: {segments_held_back} of {view.segment_count}")
+                    self._logger.debug(
+                        f"Holding segments: {segments_held_back} of {view.segment_count}"
+                    )
 
                 # Accumulate all of the fragments for segments up to and including the last_active_index
                 fragments_to_emit = []
