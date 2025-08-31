@@ -743,3 +743,19 @@ class SpeakerFragmentView:
         # Return the result
         self.annotation = result
         return result
+
+
+@dataclass
+class SpeakerVADStatus:
+    """Emitted when a speaker starts or ends speaking.
+
+    The speaker id is taken from the last word in the segment when
+    the event is emitted.
+
+    Parameters:
+        is_active: Whether the speaker is active.
+        speaker_id: The ID of the speaker.
+    """
+
+    is_active: bool
+    speaker_id: Optional[str] = None

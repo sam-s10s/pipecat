@@ -26,6 +26,7 @@ from ._models import (
     DiarizationFocusMode,
     EndOfUtteranceMode,
     SpeakerFragmentView,
+    SpeakerVADStatus,
     SpeechFragment,
     VoiceAgentConfig,
 )
@@ -77,7 +78,7 @@ class VoiceAgentClient(AsyncClient):
         self._last_ttfb: int = 0
 
         # Time to disregard speech fragments before
-        self._trim_before_time: float = 0.0
+        self._trim_before_time: float = 0
 
         # Current utterance speech data
         self._speech_fragments: list[SpeechFragment] = []
@@ -86,6 +87,8 @@ class VoiceAgentClient(AsyncClient):
 
         # Speaking states
         self._is_speaking: bool = False
+        self._current_speaker: Optional[str] = None
+        self._last_vad_time: float = 0
 
         # Speaker focus
         self._end_of_utterance_mode: EndOfUtteranceMode = config.end_of_utterance_mode
@@ -321,15 +324,18 @@ class VoiceAgentClient(AsyncClient):
                 time_s = round(self._total_time, 3)
 
                 # Emit metrics
-                self.emit(
-                    AgentServerMessageType.METRICS,
-                    {
-                        "total_time": time_s,
-                        "total_time_str": time.strftime("%H:%M:%S", time.gmtime(time_s)),
-                        "total_bytes": self._total_bytes,
-                        "last_ttfb": self._last_ttfb,
-                    },
-                )
+                try:
+                    self.emit(
+                        AgentServerMessageType.METRICS,
+                        {
+                            "total_time": time_s,
+                            "total_time_str": time.strftime("%H:%M:%S", time.gmtime(time_s)),
+                            "total_bytes": self._total_bytes,
+                            "last_ttfb": self._last_ttfb,
+                        },
+                    )
+                except Exception:
+                    pass
 
         # Trigger the task
         self._metrics_emitter_task = asyncio.create_task(emit_metrics())
@@ -418,12 +424,15 @@ class VoiceAgentClient(AsyncClient):
 
         # Emit the TTFB
         async def emit_ttfb() -> None:
-            self.emit(
-                AgentServerMessageType.TTFB_METRICS,
-                {
-                    "ttfb": self._last_ttfb,
-                },
-            )
+            try:
+                self.emit(
+                    AgentServerMessageType.TTFB_METRICS,
+                    {
+                        "ttfb": self._last_ttfb,
+                    },
+                )
+            except Exception:
+                pass
 
         # Trigger the task
         asyncio.create_task(emit_ttfb())
@@ -657,7 +666,10 @@ class VoiceAgentClient(AsyncClient):
             self._emitter_task.cancel()
 
         # Emit interim results
-        self.emit(AgentServerMessageType.INTERIM_SEGMENTS, {"segments": view.segments})
+        try:
+            self.emit(AgentServerMessageType.INTERIM_SEGMENTS, {"segments": view.segments})
+        except Exception:
+            pass
 
         # Emit finalized segments
         async def emit_after_delay(delay: float):
@@ -691,9 +703,12 @@ class VoiceAgentClient(AsyncClient):
                 )
 
                 # Emit the segments
-                self.emit(
-                    AgentServerMessageType.FINAL_SEGMENTS, {"segments": trimmed_view.segments}
-                )
+                try:
+                    self.emit(
+                        AgentServerMessageType.FINAL_SEGMENTS, {"segments": trimmed_view.segments}
+                    )
+                except Exception:
+                    pass
 
                 # Last end time
                 self._trim_before_time = trimmed_view.end_time + 0.01
@@ -744,17 +759,57 @@ class VoiceAgentClient(AsyncClient):
         # Evaluate if any valid partial words exist
         has_valid_partial = len(partial_words) > 0
 
+        # Are we already speaking
+        already_speaking = self._is_speaking
+
+        # Speakers
+        current_speaker = self._current_speaker
+        speaker = partial_words[-1].speaker if has_valid_partial else self._current_speaker
+        speaker_changed = speaker != current_speaker and current_speaker is not None
+
+        # If diarization is enabled, indicate speaker switching
+        if self._dz_enabled and speaker is not None:
+            """When enabled, we send a speech events if the speaker has changed.
+            
+            For any client that wishes to show _which_ speaker is speaking, this will
+            emit events to indicate when speakers switch.
+            """
+
+            # Check if speaker is different to the current speaker
+            if already_speaking and speaker_changed:
+                try:
+                    self.emit(
+                        AgentServerMessageType.SPEECH_ENDED,
+                        SpeakerVADStatus(speaker_id=current_speaker, is_active=False),
+                    )
+                    self.emit(
+                        AgentServerMessageType.SPEECH_STARTED,
+                        SpeakerVADStatus(speaker_id=speaker, is_active=True),
+                    )
+                except Exception:
+                    pass
+
+        # Update current speaker
+        self._current_speaker = speaker
+
         # No change required
-        if has_valid_partial == self._is_speaking:
+        if has_valid_partial == already_speaking:
             return
 
         # Set the speaking state
         self._is_speaking = not self._is_speaking
 
-        # Emit the event
-        self.emit(
-            AgentServerMessageType.SPEECH_STARTED
-            if self._is_speaking
-            else AgentServerMessageType.SPEECH_ENDED,
-            {"words": len(partial_words)},
-        )
+        # Emit the event for latest speaker
+        try:
+            self.emit(
+                AgentServerMessageType.SPEECH_STARTED
+                if self._is_speaking
+                else AgentServerMessageType.SPEECH_ENDED,
+                SpeakerVADStatus(speaker_id=speaker, is_active=self._is_speaking),
+            )
+        except Exception:
+            pass
+
+        # Reset the current speaker
+        if not self._is_speaking:
+            self._current_speaker = None

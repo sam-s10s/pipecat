@@ -287,6 +287,9 @@ class SpeechmaticsSTTService(STTService):
             params.speaker_passive_format or params.speaker_active_format
         )
 
+        # Metrics
+        self.set_model_name(self._config.operating_point.value)
+
         # Speaking states
         self._is_speaking: bool = False
 
@@ -421,11 +424,11 @@ class SpeechmaticsSTTService(STTService):
 
             @self._client.on(AgentServerMessageType.SPEECH_STARTED)
             def _evt_on_speech_started(message: dict[str, Any]):
-                logger.warning("Speech started")
+                logger.warning(f"Speech started: {message}")
 
             @self._client.on(AgentServerMessageType.SPEECH_ENDED)
             def _evt_on_speech_ended(message: dict[str, Any]):
-                logger.warning("Speech ended")
+                logger.warning(f"Speech ended: {message}")
 
         # Speaker Result
         if self._config.enable_diarization:
