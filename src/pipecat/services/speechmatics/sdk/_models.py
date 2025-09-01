@@ -306,7 +306,9 @@ class AnnotationFlags(IntFlag):
     HAS_EOS = auto()
     ENDS_WITH_EOS = auto()
     HAS_DISFLUENCY = auto()
+    STARTS_WITH_DISFLUENCY = auto()
     ENDS_WITH_DISFLUENCY = auto()
+    ENDS_WITH_PUNCTUATION = auto()
     HIGH_DISFLUENCY_COUNT = auto()
     VERY_SLOW_SPEAKER = auto()
     SLOW_SPEAKER = auto()
@@ -643,6 +645,14 @@ class SpeakerFragmentView:
         # Annotation result
         result = AnnotationResult()
 
+        # References
+        segment_length: int = len(segment.fragments)
+        first_fragment: SpeechFragment = segment.fragments[0]
+        last_fragment: SpeechFragment = segment.fragments[-1]
+        penultimate_fragment: Optional[SpeechFragment] = (
+            segment.fragments[-2] if segment_length > 1 else None
+        )
+
         # Count of words
         words = [frag for frag in segment.fragments if frag._type == "word"]
         word_count = len(words)
@@ -660,17 +670,31 @@ class SpeakerFragmentView:
         # Finals
         if any(frag.is_final for frag in segment.fragments):
             result.add(AnnotationFlags.HAS_FINAL)
-        if segment.fragments[0].is_final:
+        if first_fragment.is_final:
             result.add(AnnotationFlags.STARTS_WITH_FINAL)
-        if segment.fragments[-1].is_final:
+        if last_fragment.is_final:
             result.add(AnnotationFlags.ENDS_WITH_FINAL)
+
+        # End of sentence
+        if last_fragment.is_eos:
+            result.add(AnnotationFlags.ENDS_WITH_EOS)
+
+        # Punctuation
+        if last_fragment.is_punctuation:
+            result.add(AnnotationFlags.ENDS_WITH_PUNCTUATION)
 
         # Disfluency
         if any(frag.is_disfluency for frag in segment.fragments):
             result.add(AnnotationFlags.HAS_DISFLUENCY)
-        if segment.fragments[0].is_disfluency:
+        if first_fragment.is_disfluency:
             result.add(AnnotationFlags.STARTS_WITH_DISFLUENCY)
-        if segment.fragments[-1].is_disfluency:
+        if last_fragment.is_disfluency:
+            result.add(AnnotationFlags.ENDS_WITH_DISFLUENCY)
+        if (
+            penultimate_fragment
+            and result.any(AnnotationFlags.ENDS_WITH_EOS, AnnotationFlags.ENDS_WITH_PUNCTUATION)
+            and penultimate_fragment.is_disfluency
+        ):
             result.add(AnnotationFlags.ENDS_WITH_DISFLUENCY)
 
         # Rate of speech
@@ -688,10 +712,6 @@ class SpeakerFragmentView:
                 result.add(AnnotationFlags.SLOW_SPEAKER)
             elif wpm > 350:
                 result.add(AnnotationFlags.FAST_SPEAKER)
-
-        # End of sentence
-        if segment.fragments[-1].is_eos:
-            result.add(AnnotationFlags.ENDS_WITH_EOS)
 
         # Return the annotation result
         return result

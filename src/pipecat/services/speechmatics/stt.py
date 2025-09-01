@@ -8,6 +8,7 @@
 
 import asyncio
 import os
+import time
 import warnings
 from typing import Any, AsyncGenerator
 
@@ -617,10 +618,23 @@ class SpeechmaticsSTTService(STTService):
         engine emitting the first partial. This is only calculated at the
         start of an utterance.
         """
-        await self.start_processing_metrics()
-        await self.start_ttfb_metrics()
-        await asyncio.sleep(ttfb / 1000.0)
+        # Skip if metrics not available
+        if not self._metrics:
+            return
+
+        # Calculate time as time.time() - ttfb (which is seconds)
+        start_time = time.time() - (ttfb / 1000.0)
+
+        # TODO - this does not use official methods!
+
+        # Update internal metrics
+        self._metrics._start_ttfb_time = start_time
+        self._metrics._start_processing_time = start_time
+
+        # Stop TTFB metrics
         await self.stop_ttfb_metrics()
+
+        # TODO - have this elsewhere to capture all processing time?
         await self.stop_processing_metrics()
 
 
@@ -726,7 +740,7 @@ def _locale_to_speechmatics_locale(language_code: str, locale: Language) -> str 
 
     # Fail if locale is not supported
     if not result:
-        logger.warning(f"{self} unsupported output locale: {locale}, defaulting to {language_code}")
+        logger.warning(f"Unsupported output locale: {locale}, defaulting to {language_code}")
 
     # Return the locale code
     return result

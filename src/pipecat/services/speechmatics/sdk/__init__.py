@@ -11,6 +11,8 @@ partial and final transcription from the STT engine into accumulated
 transcriptions with flags to indicate changes between messages, etc.
 """
 
+__version__ = "0.1.0"
+
 from speechmatics.rt import (
     AudioEncoding,
     AudioFormat,
@@ -32,7 +34,6 @@ from ._models import (
     SpeakerVADStatus,
     SpeechFragment,
     VoiceAgentConfig,
-    __version__,
 )
 
 __all__ = [

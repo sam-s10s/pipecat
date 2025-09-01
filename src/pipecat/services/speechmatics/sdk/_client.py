@@ -9,7 +9,7 @@ import datetime
 import os
 import re
 import time
-from typing import Any, Optional
+from typing import Any, Optional, Tuple
 from urllib.parse import urlencode
 
 from speechmatics.rt import (
@@ -23,21 +23,23 @@ from speechmatics.rt import (
     __version__ as speechmatics_version,
 )
 
+from . import __version__
 from ._models import (
     AgentServerMessageType,
     AnnotationFlags,
+    AnnotationResult,
     DiarizationFocusMode,
+    DiarizationSpeakerConfig,
     EndOfUtteranceMode,
     SpeakerFragmentView,
     SpeakerVADStatus,
     SpeechFragment,
     VoiceAgentConfig,
-    __version__,
 )
 
 try:
     from loguru import logger
-except ModuleNotFoundError as e:
+except ModuleNotFoundError:
     from ._logging import get_logger
 
 DEBUG_MORE = os.getenv("SPEECHMATICS_DEBUG_MORE", "0").lower() in ["1", "true"]
@@ -254,7 +256,8 @@ class VoiceAgentClient(AsyncClient):
         # Connect to API
         try:
             await self.start_session(
-                transcription_config=self._transcription_config, audio_format=self._audio_format
+                transcription_config=self._transcription_config,
+                audio_format=self._audio_format,
             )
             self._is_connected = True
             self._start_metrics_task()
@@ -426,10 +429,6 @@ class VoiceAgentClient(AsyncClient):
         # Debug
         self._logger.debug(f"TTFB {self._total_time} - {start_time} = {self._last_ttfb}")
 
-        # Skip if no listeners
-        if not self.listeners(AgentServerMessageType.TTFB_METRICS):
-            return
-
         # Emit the TTFB
         async def emit_ttfb() -> None:
             try:
@@ -443,7 +442,8 @@ class VoiceAgentClient(AsyncClient):
                 pass
 
         # Trigger the task
-        asyncio.create_task(emit_ttfb())
+        if self.listeners(AgentServerMessageType.TTFB_METRICS):
+            asyncio.create_task(emit_ttfb())
 
     async def _add_speech_fragments(self, message: dict[str, Any], is_final: bool = False) -> bool:
         """Takes a new Partial or Final from the STT engine.
@@ -633,12 +633,25 @@ class VoiceAgentClient(AsyncClient):
 
             # Timer for when ADAPTIVE
             elif self._end_of_utterance_mode == EndOfUtteranceMode.ADAPTIVE:
+                """Check the contents of the last segment."
+
+                Check for:
+                 - ends with a disfluency
+                """
+
+                # Default
                 emit_final_delay = self._end_of_utterance_delay
+
+                # Last segment ends with a disfluency
+                if last_active_segment and last_active_segment.annotation.has(
+                    AnnotationFlags.ENDS_WITH_DISFLUENCY
+                ):
+                    emit_final_delay = self._end_of_utterance_delay * 3.0
+
+                # TODO - Other checks / end of turn detection
 
             # Emit segments
             should_emit = True
-
-        # TODO - Other checks / end of turn detection
 
         # Return the result
         return should_emit, emit_final_delay
@@ -715,7 +728,8 @@ class VoiceAgentClient(AsyncClient):
                 # Emit the segments
                 try:
                     self.emit(
-                        AgentServerMessageType.FINAL_SEGMENTS, {"segments": trimmed_view.segments}
+                        AgentServerMessageType.FINAL_SEGMENTS,
+                        {"segments": trimmed_view.segments},
                     )
                 except Exception:
                     pass
@@ -780,7 +794,7 @@ class VoiceAgentClient(AsyncClient):
         # If diarization is enabled, indicate speaker switching
         if self._dz_enabled and speaker is not None:
             """When enabled, we send a speech events if the speaker has changed.
-            
+
             For any client that wishes to show _which_ speaker is speaking, this will
             emit events to indicate when speakers switch.
             """
@@ -812,9 +826,11 @@ class VoiceAgentClient(AsyncClient):
         # Emit the event for latest speaker
         try:
             self.emit(
-                AgentServerMessageType.SPEECH_STARTED
-                if self._is_speaking
-                else AgentServerMessageType.SPEECH_ENDED,
+                (
+                    AgentServerMessageType.SPEECH_STARTED
+                    if self._is_speaking
+                    else AgentServerMessageType.SPEECH_ENDED
+                ),
                 SpeakerVADStatus(speaker_id=speaker, is_active=self._is_speaking),
             )
         except Exception:
@@ -836,7 +852,6 @@ class VoiceAgentClient(AsyncClient):
         """
         query_params = dict()
         query_params["sm-app"] = app or f"voice-sdk/{__version__}"
-        query_params["sm-rt-sdk"] = f"{speechmatics_version}"
         query_params["sm-voice-sdk"] = f"{__version__}"
         query = urlencode(query_params)
 
