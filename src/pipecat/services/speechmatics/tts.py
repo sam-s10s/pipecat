@@ -130,34 +130,7 @@ class SpeechmaticsTTSService(TTSService):
 
                 yield TTSStartedFrame()
 
-                # Process the response in streaming chunks
                 first_chunk = True
-                buffer = b""
-
-                # Helper to convert all complete 4-byte float samples from buffer into one frame
-                def _emit_complete_samples():
-                    nonlocal buffer
-                    if len(buffer) < 4:
-                        return None
-                    complete_samples = len(buffer) // 4
-                    complete_bytes = complete_samples * 4
-                    # Log what we're about to process
-                    duration_seconds = complete_samples / float(self.sample_rate)
-                    logger.debug(
-                        f"Processing {complete_bytes} bytes ({complete_samples} samples, {duration_seconds:.4f}s)"
-                    )
-                    # Convert raw bytes to numpy array of 32-bit floats (little-endian)
-                    float_samples = np.frombuffer(buffer[:complete_bytes], dtype="<f4")
-                    # Convert float samples (-1.0 to 1.0) to 16-bit integers
-                    int16_samples = (float_samples * 32767).astype(np.int16)
-                    # Keep remaining bytes for next iteration
-                    buffer = buffer[complete_bytes:]
-                    return TTSAudioRawFrame(
-                        audio=int16_samples.tobytes(),
-                        sample_rate=self.sample_rate,
-                        num_channels=1,
-                    )
-
                 async for chunk in response.content.iter_any():
                     if not chunk:
                         continue
@@ -166,24 +139,20 @@ class SpeechmaticsTTSService(TTSService):
                         await self.stop_ttfb_metrics()
                         first_chunk = False
 
-                    buffer += chunk
-                    logger.debug(f"Received chunk: {len(chunk)} bytes")
+                    # Calculate processing metrics for logging
+                    chunk_bytes = len(chunk)
+                    samples = chunk_bytes // 2  # 2 bytes per int16 sample
+                    duration_seconds = samples / float(self.sample_rate)
+                    logger.debug(
+                        f"Processing {chunk_bytes} bytes ({samples} samples, {duration_seconds:.4f}s)"
+                    )
 
-                    # Warn if chunk size is not divisible by 4 bytes (float32 sample size)
-                    if len(chunk) % 4 != 0:
-                        logger.warning(
-                            f"Received chunk of {len(chunk)} bytes, not divisible by 4 (float32 sample size)"
-                        )
-
-                    # Emit a frame for all complete samples currently in buffer
-                    frame = _emit_complete_samples()
-                    if frame:
-                        yield frame
-
-                # Process any remaining bytes in buffer after streaming ends
-                frame = _emit_complete_samples()
-                if frame:
-                    yield frame
+                    # Directly yield the raw audio chunk without conversion
+                    yield TTSAudioRawFrame(
+                        audio=chunk,
+                        sample_rate=self.sample_rate,
+                        num_channels=1,
+                    )
 
         except Exception as e:
             logger.exception(f"Error generating TTS: {e}")
