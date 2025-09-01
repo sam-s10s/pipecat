@@ -38,7 +38,7 @@ class AdditionalVocabEntry:
     """
 
     content: str
-    sounds_like: list[str] = field(default_factory=list)
+    sounds_like: list[str] = field(default=[])
 
 
 @dataclass
@@ -84,8 +84,8 @@ class DiarizationSpeakerConfig:
             Defaults to `DiarizationFocusMode.RETAIN`.
     """
 
-    focus_speakers: list[str] = field(default_factory=list)
-    ignore_speakers: list[str] = field(default_factory=list)
+    focus_speakers: list[str] = field(default=[])
+    ignore_speakers: list[str] = field(default=[])
     focus_mode: DiarizationFocusMode = DiarizationFocusMode.RETAIN
 
 
@@ -179,7 +179,7 @@ class VoiceAgentConfig:
     max_delay: float = 1.0
     end_of_utterance_silence_trigger: float = 0.5
     end_of_utterance_mode: EndOfUtteranceMode = EndOfUtteranceMode.FIXED
-    additional_vocab: list[AdditionalVocabEntry] = field(default_factory=list)
+    additional_vocab: list[AdditionalVocabEntry] = field(default=[])
     punctuation_overrides: Optional[dict] = None
 
     # Diarization
@@ -187,8 +187,8 @@ class VoiceAgentConfig:
     speaker_sensitivity: float = 0.5
     max_speakers: Optional[int] = None
     prefer_current_speaker: bool = False
-    speaker_config: DiarizationSpeakerConfig = field(default_factory=DiarizationSpeakerConfig)
-    known_speakers: list[DiarizationKnownSpeaker] = field(default_factory=list)
+    speaker_config: DiarizationSpeakerConfig = field(default=DiarizationSpeakerConfig())
+    known_speakers: list[DiarizationKnownSpeaker] = field(default=[])
 
     # Audio
     sample_rate: int = 16000
@@ -230,6 +230,8 @@ class AgentServerMessageType(str, Enum):
         Info: Informational message.
         Warning: Warning message.
         Error: Error message.
+        AddPartialTranscript: Partial transcript has been added.
+        AddTranscript: Transcript has been added.
         SpeechStarted: Speech has started.
         SpeechEnded: Speech has ended.
         TurnDetected: A turn has been detected.
@@ -262,6 +264,10 @@ class AgentServerMessageType(str, Enum):
     INFO = "Info"
     WARNING = "Warning"
     ERROR = "Error"
+
+    # Raw transcription messages
+    ADD_PARTIAL_TRANSCRIPT = "AddPartialTranscript"
+    ADD_TRANSCRIPT = "AddTranscript"
 
     # VAD messages
     SPEECH_STARTED = "SpeechStarted"
@@ -335,7 +341,7 @@ class AnnotationResult:
         """
         self.flags = 0
         for flag in flags:
-            self.add_flag(flag)
+            self.add(flag)
 
     def has(self, *flags: AnnotationFlags) -> bool:
         """Check if the object has all given flags."""
@@ -353,13 +359,19 @@ class AnnotationResult:
         """Remove a flag from the object."""
         self.flags &= ~flag
 
-    def __eq__(self, other: int):
+    def __eq__(self, o: object) -> bool:
         """Check if the object is equal to another."""
-        return self.flags == other
+        if isinstance(o, AnnotationResult):
+            return self.flags == o.flags
+        elif isinstance(o, AnnotationFlags):
+            return self.flags == o
+        elif isinstance(o, int):
+            return self.flags == o
+        return False
 
-    def __str__(self):
+    def __str__(self) -> str:
         """String representation of the flags."""
-        return f"{type(self).__name__}({', '.join(flag.name for flag in AnnotationFlags if self.has(flag))})"
+        return f"{type(self).__name__}({self.flags})"
 
 
 @dataclass
@@ -419,8 +431,8 @@ class SpeakerSegment:
     is_active: bool = False
     timestamp: Optional[str] = None
     language: Optional[str] = None
-    fragments: list[SpeechFragment] = field(default_factory=list)
-    annotation: Optional[AnnotationResult] = None
+    fragments: list[SpeechFragment] = field(default=[])
+    annotation: AnnotationResult = AnnotationResult()
 
     @property
     def start_time(self) -> float:
@@ -543,12 +555,11 @@ class SpeakerFragmentView:
             return -1
         return len(self.segments) - idx - 1
 
-    @property
-    def partial_segment_count(self) -> int:
-        return sum(1 for seg in self.segments if not seg.is_final)
-
     def format_text(
-        self, format: str = "|{speaker_id}|{text}|", separator: str = "", words_only: bool = False
+        self,
+        format: str = "|{speaker_id}|{text}|",
+        separator: str = "",
+        words_only: bool = False,
     ) -> str:
         return separator.join(segment.format_text(format, words_only) for segment in self.segments)
 

@@ -19,11 +19,9 @@ from speechmatics.rt import (
     ServerMessageType,
     TranscriptionConfig,
 )
-from speechmatics.rt import (
-    __version__ as speechmatics_version,
-)
 
 from . import __version__
+from ._logging import get_logger
 from ._models import (
     AgentServerMessageType,
     AnnotationFlags,
@@ -36,11 +34,6 @@ from ._models import (
     SpeechFragment,
     VoiceAgentConfig,
 )
-
-try:
-    from loguru import logger
-except ModuleNotFoundError:
-    from ._logging import get_logger
 
 DEBUG_MORE = os.getenv("SPEECHMATICS_DEBUG_MORE", "0").lower() in ["1", "true"]
 DEBUG_MESSAGES = os.getenv("SPEECHMATICS_DEBUG_MESSAGES", "0").lower() in ["1", "true"]
@@ -66,27 +59,30 @@ class VoiceAgentClient(AsyncClient):
 
         Args:
             api_key: Speechmatics API key. If None, uses SPEECHMATICS_API_KEY env var.
-            url: REST API endpoint URL. If None, uses SPEECHMATICS_BATCH_URL env var
+            url: REST API endpoint URL. If None, uses SPEECHMATICS_RT_URL env var
                  or defaults to production endpoint.
             app: Optional application name to use in the endpoint URL.
             config: Voice agent configuration.
         """
+        # Default URL
+        if not url:
+            url = os.getenv("SPEECHMATICS_RT_URL") or "wss://eu2.rt.speechmatics.com/v2"
+
         # Initialize the client
         super().__init__(api_key=api_key, url=self._get_endpoint_url(url, app))
 
         # Logger
-        self._logger = logger or get_logger(__name__)
+        self._logger = get_logger(__name__)
 
-        # Internal configuration
-        self._transcription_config: Optional[TranscriptionConfig] = None
-        self._audio_format: Optional[AudioFormat] = None
+        # Process the config
+        self._config, self._transcription_config, self._audio_format = self._process_config(config)
 
         # Connection status
         self._is_connected: bool = False
         self._is_ready_for_audio: bool = False
 
         # Timing info
-        self._start_time: Optional[datetime.datetime] = None
+        self._start_time: datetime.datetime = datetime.datetime.now(datetime.timezone.utc)
         self._total_time: float = 0
         self._total_bytes: int = 0
 
@@ -107,11 +103,11 @@ class VoiceAgentClient(AsyncClient):
         self._current_speaker: Optional[str] = None
         self._last_vad_time: float = 0
 
-        # Speaker focus
-        self._end_of_utterance_mode: EndOfUtteranceMode = config.end_of_utterance_mode
-        self._end_of_utterance_delay: float = config.end_of_utterance_silence_trigger
-        self._dz_enabled: bool = config.enable_diarization
-        self._dz_config: Optional[DiarizationSpeakerConfig] = None
+        # Diarization / speaker focus
+        self._end_of_utterance_mode: EndOfUtteranceMode = self._config.end_of_utterance_mode
+        self._end_of_utterance_delay: float = self._config.end_of_utterance_silence_trigger
+        self._dz_enabled: bool = self._config.enable_diarization
+        self._dz_config = self._config.speaker_config
 
         # EndOfUtterance fallback timer
         self._finalize_task: Optional[asyncio.Task] = None
@@ -127,18 +123,27 @@ class VoiceAgentClient(AsyncClient):
         self._metrics_emitter_interval: float = 10.0
         self._metrics_emitter_task: Optional[asyncio.Task] = None
 
-        # Process the config
-        self._process_config(config)
+        # Register handlers
         self._register_event_handlers()
 
-    def _process_config(self, config: Optional[VoiceAgentConfig] = None) -> None:
+    # def on(self, event: ServerMessageType, callback: Optional[Callable] = None) -> Callable:
+
+    def _process_config(
+        self, config: Optional[VoiceAgentConfig] = None
+    ) -> Tuple[VoiceAgentConfig, TranscriptionConfig, AudioFormat]:
         """Create a formatted STT transcription and audio config.
 
         Creates a transcription config object based on the service parameters. Aligns
         with the Speechmatics RT API transcription config.
+
+        Args:
+            config: Optional VoiceAgentConfig object to process.
+
+        Returns:
+            A tuple of (VoiceAgentConfig, TranscriptionConfig, AudioFormat).
         """
-        # Default
-        if not config:
+        # Default config
+        if config is None:
             config = VoiceAgentConfig()
 
         # Transcription config
@@ -164,7 +169,7 @@ class VoiceAgentClient(AsyncClient):
 
         # Diarization
         if config.enable_diarization:
-            dz_cfg = {}
+            dz_cfg: dict[str, Any] = {}
             if config.speaker_sensitivity is not None:
                 dz_cfg["speaker_sensitivity"] = config.speaker_sensitivity
             if config.prefer_current_speaker is not None:
@@ -189,18 +194,15 @@ class VoiceAgentClient(AsyncClient):
         if config.punctuation_overrides:
             transcription_config.punctuation_overrides = config.punctuation_overrides
 
-        # Set config
-        self._transcription_config = transcription_config
-
         # Configure the audio
-        self._audio_format = AudioFormat(
+        audio_format = AudioFormat(
             encoding=config.audio_encoding,
             sample_rate=config.sample_rate,
             chunk_size=config.chunk_size,
         )
 
-        # Diarization config
-        self._dz_config = config.speaker_config
+        # Return the config objects
+        return config, transcription_config, audio_format
 
     def _register_event_handlers(self) -> None:
         """Register event handlers.
@@ -315,8 +317,9 @@ class VoiceAgentClient(AsyncClient):
         await super().send_audio(payload)
 
         # Calculate the time (in seconds) for the payload
-        self._total_time += len(payload) / self._audio_format.sample_rate / 2
-        self._total_bytes += len(payload)
+        if self._audio_format is not None:
+            self._total_time += len(payload) / self._audio_format.sample_rate / 2
+            self._total_bytes += len(payload)
 
     def _start_metrics_task(self) -> None:
         """Start the metrics task."""
@@ -594,15 +597,15 @@ class VoiceAgentClient(AsyncClient):
         self,
         view: SpeakerFragmentView,
         annotation: AnnotationResult,
-    ) -> Tuple(bool, float):
+    ) -> Tuple[bool, float | None]:
         """Calculate the delay before finalizing segments.
 
         Process the most recent segment and view to determine how long to delay before emitting
         the segments to the client.
 
         Args:
-            view: The speaker fragment view to emit segments from.
-            annotation: The annotation result to emit segments from.
+            view: The speaker fragment to evaluate.
+            annotation: The annotation result to use for evaluation.
 
         Returns:
             Tuple of (should_emit, emit_final_delay)
