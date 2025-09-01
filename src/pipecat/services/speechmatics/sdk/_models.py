@@ -38,7 +38,7 @@ class AdditionalVocabEntry:
     """
 
     content: str
-    sounds_like: list[str] = field(default=[])
+    sounds_like: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -84,8 +84,8 @@ class DiarizationSpeakerConfig:
             Defaults to `DiarizationFocusMode.RETAIN`.
     """
 
-    focus_speakers: list[str] = field(default=[])
-    ignore_speakers: list[str] = field(default=[])
+    focus_speakers: list[str] = field(default_factory=list)
+    ignore_speakers: list[str] = field(default_factory=list)
     focus_mode: DiarizationFocusMode = DiarizationFocusMode.RETAIN
 
 
@@ -179,7 +179,7 @@ class VoiceAgentConfig:
     max_delay: float = 1.0
     end_of_utterance_silence_trigger: float = 0.5
     end_of_utterance_mode: EndOfUtteranceMode = EndOfUtteranceMode.FIXED
-    additional_vocab: list[AdditionalVocabEntry] = field(default=[])
+    additional_vocab: list[AdditionalVocabEntry] = field(default_factory=list)
     punctuation_overrides: Optional[dict] = None
 
     # Diarization
@@ -187,8 +187,8 @@ class VoiceAgentConfig:
     speaker_sensitivity: float = 0.5
     max_speakers: Optional[int] = None
     prefer_current_speaker: bool = False
-    speaker_config: DiarizationSpeakerConfig = field(default=DiarizationSpeakerConfig())
-    known_speakers: list[DiarizationKnownSpeaker] = field(default=[])
+    speaker_config: DiarizationSpeakerConfig = field(default_factory=DiarizationSpeakerConfig)
+    known_speakers: list[DiarizationKnownSpeaker] = field(default_factory=list)
 
     # Audio
     sample_rate: int = 16000
@@ -431,7 +431,7 @@ class SpeakerSegment:
     is_active: bool = False
     timestamp: Optional[str] = None
     language: Optional[str] = None
-    fragments: list[SpeechFragment] = field(default=[])
+    fragments: list[SpeechFragment] = field(default_factory=list)
     annotation: AnnotationResult = AnnotationResult()
 
     @property
