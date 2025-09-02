@@ -34,7 +34,7 @@ from pipecat.transcriptions.language import Language
 from pipecat.utils.tracing.service_decorators import traced_stt
 
 try:
-    from .sdk import (
+    from speechmatics.voice import (
         AdditionalVocabEntry,
         AgentClientMessageType,
         AgentServerMessageType,
@@ -58,9 +58,6 @@ except ModuleNotFoundError as e:
 
 # Load environment variables
 load_dotenv()
-
-# TODO - Enable SDK logging (during dev)
-logger.enable("")
 
 
 class SpeechmaticsSTTService(STTService):
@@ -410,7 +407,7 @@ class SpeechmaticsSTTService(STTService):
         )
 
         # Interim segment event
-        @self._client.on(AgentServerMessageType.ADD_PARTIAL_SEGMENTS)
+        @self._client.on(AgentServerMessageType.ADD_INTERIM_SEGMENTS)
         def _evt_on_interim_segment(message: dict[str, Any]):
             segments: list[SpeakerSegment] = message["segments"]
             asyncio.run_coroutine_threadsafe(self._send_frames(segments), self.get_event_loop())
@@ -459,6 +456,7 @@ class SpeechmaticsSTTService(STTService):
         # TTFB Metrics
         @self._client.on(AgentServerMessageType.TTFB_METRICS)
         def _evt_on_ttfb_metrics(message: dict[str, Any]):
+            logger.debug(f"⏰ TTFB metrics received from STT: {message}")
             asyncio.run_coroutine_threadsafe(
                 self._emit_ttfb_metrics(message.get("ttfb")), self.get_event_loop()
             )
