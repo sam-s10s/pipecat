@@ -14,13 +14,13 @@ for downstream processing by LLM context aggregators.
 import asyncio
 from typing import Optional
 
+from pipecat.audio.dtmf.types import KeypadEntry
 from pipecat.frames.frames import (
     BotInterruptionFrame,
     CancelFrame,
     EndFrame,
     Frame,
     InputDTMFFrame,
-    KeypadEntry,
     StartFrame,
     TranscriptionFrame,
 )
@@ -103,7 +103,7 @@ class DTMFAggregator(FrameProcessor):
         digit_value = frame.button.value
         self._aggregation += digit_value
 
-        # For first digit, schedule interruption in separate task
+        # For first digit, schedule interruption.
         if is_first_digit:
             await self.push_frame(BotInterruptionFrame(), FrameDirection.UPSTREAM)
 

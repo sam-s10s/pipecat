@@ -7,7 +7,127 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## Added
+
+- Added `pipecat.extensions.ivr` for automated IVR system navigation with
+  configurable goals and conversation handling. Supports DTMF input, verbal
+  responses, and intelligent menu traversal.
+
+  Basic usage:
+
+  ```python
+  from pipecat.extensions.ivr.ivr_navigator import IVRNavigator
+
+  # Create IVR navigator with your goal
+  ivr_navigator = IVRNavigator(
+      llm=llm_service,
+      ivr_prompt="Navigate to billing department to dispute a charge"
+  )
+
+  # Handle different outcomes
+  @ivr_navigator.event_handler("on_conversation_detected")
+  async def on_conversation(processor, conversation_history):
+      # Switch to normal conversation mode
+      pass
+
+  @ivr_navigator.event_handler("on_ivr_status_changed")
+  async def on_ivr_status(processor, status):
+      if status == IVRStatus.COMPLETED:
+          # End pipeline, transfer call, or start bot conversation
+      elif status == IVRStatus.STUCK:
+          # Handle navigation failure
+  ```
+
+- `BaseOutputTransport` now implements `write_dtmf()` by loading DTMF audio and
+  sending it through the transport. This makes sending DTMF generic across all
+  output transports.
+
+- Added new config parameters to `GladiaSTTService`. 
+  - PreProcessingConfig > `audio_enhancer` to enhance audio quality.
+  - CustomVocabularyItem > `pronunciations` and `language` to specify special pronunciations and in which language it will be pronounced.
+
+## Changed
+
+- `pipecat.frames.frames.KeypadEntry` is deprecated and has been moved to
+  `pipecat.audio.dtmf.types.KeypadEntry`.
+
+- Updated `RimeTTSService`'s flush_audio message to conform with Rime's official API.
+
+## Removed
+
+- Remove `StopInterruptionFrame`. This was a legacy frame that was not being
+  used really anywhere and it didn't provide any useful meaning. It was only
+  pushed after `UserStoppedSpeakingFrame`, so developers can just use
+  `UserStoppedSpeakingFrame`.
+
+- `DailyTransport.write_dtmf()` has been removed in favor of the generic
+  `BaseOutputTransport.write_dtmf()`.
+
+- Remove deprecated `DailyTransport.send_dtmf()`.
+
+## Deprecated
+
+- `pipecat.frames.frames.KeypadEntry` is deprecated use
+  `pipecat.audio.dtmf.types.KeypadEntry` instead.
+
+## Fixed
+
+- Fixed an issue where `PipelineTask` was not cleaning up the observers.
+
+## [0.0.82] - 2025-08-28
+
 ### Added
+
+- Added a new `LLMRunFrame` to trigger an LLM response:
+
+  ```python
+  await task.queue_frames([LLMRunFrame()])
+  ```
+
+  This replaces `OpenAILLMContextFrame`, which you’d previously typically use
+  like this:
+
+  ```python
+  await task.queue_frames([context_aggregator.user().get_context_frame()])
+  ```
+
+  Use this way of kicking off your conversation when you’ve already initialized
+  your context and are simply instructing the bot when to go:
+
+  ```python
+  context = OpenAILLMContext(messages, tools)
+  context_aggregator = llm.create_context_aggregator(context)
+
+  # ...
+
+  @transport.event_handler("on_client_connected")
+  async def on_client_connected(transport, client):
+      # Kick off the conversation.
+      await task.queue_frames([LLMRunFrame()])
+  ```
+
+  Note that if you want to add new messages when kicking off the conversation,
+  you could use `LLMMessagesAppendFrame` with `run_llm=True` instead:
+
+  ```python
+  @transport.event_handler("on_client_connected")
+  async def on_client_connected(transport, client):
+      # Kick off the conversation.
+      await task.queue_frames([LLMMessagesAppendFrame(new_messages, run_llm=True)])
+  ```
+
+  In the rare case you don’t have a context aggregator in your pipeline, then
+  you may continue using a context frame.
+
+- Added support for switching between audio+text to text-only modes within the
+  same pipeline. This is done by pushing
+  `LLMConfigureOutputFrame(skip_tts=True)` to enter text-only mode, and
+  disabling it to return to audio+text. The LLM will still generate tokens and
+  add them to the context, but they will not be sent to TTS.
+
+- Added `skip_tts` field to `TextFrame`. This lets a text frame bypass TTS while
+  still being included in the LLM context. Useful for cases like structured text
+  that isn’t meant to be spoken but should still contribute to context.
 
 - Added a `cancel_timeout_secs` argument to `PipelineTask` which defines how
   long the pipeline has to complete cancellation. When `PipelineTask.cancel()`
@@ -87,6 +207,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Updated `daily-python` to 0.19.8.
+
+- `PipelineTask` now waits for `StartFrame` to reach the end of the pipeline
+  before pushing any other frames.
+
 - Updated `CartesiaTTSService` and `CartesiaHttpTTSService` to align with
   Cartesia's changes for the `speed` parameter. It now takes only an enum of
   `slow`, `normal`, or `fast`.
@@ -99,6 +224,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   via `SarvamHttpTTSService`.
 
 ### Fixed
+
+- Fixed an RTVI issue that was causing frames to be pushed before pipeline was
+  properly initialized.
 
 - Fixed some `get_messages_for_logging()` that were returning a JSON string
   instead of a list.

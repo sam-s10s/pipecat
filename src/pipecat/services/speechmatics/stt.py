@@ -9,7 +9,6 @@
 import asyncio
 import os
 import time
-import warnings
 from typing import Any, AsyncGenerator
 
 from dotenv import load_dotenv
@@ -763,6 +762,8 @@ def _check_deprecated_args(kwargs: dict, params: SpeechmaticsSTTService.InputPar
 
     # Show deprecation warnings
     def _deprecation_warning(old: str, new: str | None = None):
+        import warnings
+
         with warnings.catch_warnings():
             warnings.simplefilter("always")
             if new:

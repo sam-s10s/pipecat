@@ -30,7 +30,6 @@ from pipecat.frames.frames import (
     FrameProcessorResumeUrgentFrame,
     StartFrame,
     StartInterruptionFrame,
-    StopInterruptionFrame,
     SystemFrame,
 )
 from pipecat.metrics.metrics import LLMTokenUsage, MetricsData
@@ -444,7 +443,7 @@ class FrameProcessor(BaseObject):
 
         .. deprecated:: 0.0.81
             This function is deprecated, use `await task` or
-            `await asyncio.wait_for(task, timeout) instead.
+            `await asyncio.wait_for(task, timeout)` instead.
 
         Args:
             task: The task to wait for.
@@ -452,12 +451,14 @@ class FrameProcessor(BaseObject):
         """
         import warnings
 
-        warnings.warn(
-            "`FrameProcessor.wait_for_task()` is deprecated. "
-            "Use `await task` or `await asyncio.wait_for(task, timeout)` instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("always")
+            warnings.warn(
+                "`FrameProcessor.wait_for_task()` is deprecated. "
+                "Use `await task` or `await asyncio.wait_for(task, timeout)` instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
 
         if timeout:
             await asyncio.wait_for(task, timeout)
@@ -585,8 +586,6 @@ class FrameProcessor(BaseObject):
         elif isinstance(frame, StartInterruptionFrame):
             await self._start_interruption()
             await self.stop_all_metrics()
-        elif isinstance(frame, StopInterruptionFrame):
-            self._should_report_ttfb = True
         elif isinstance(frame, CancelFrame):
             await self.__cancel(frame)
         elif isinstance(frame, (FrameProcessorPauseFrame, FrameProcessorPauseUrgentFrame)):

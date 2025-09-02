@@ -276,11 +276,13 @@ class TTSService(AIService):
         """
         import warnings
 
-        warnings.warn(
-            "`TTSService.say()` is deprecated. Push a `TTSSpeakFrame` instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("always")
+            warnings.warn(
+                "`TTSService.say()` is deprecated. Push a `TTSSpeakFrame` instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
 
         await self.queue_frame(TTSSpeakFrame(text))
 
@@ -297,6 +299,11 @@ class TTSService(AIService):
         await super().process_frame(frame, direction)
 
         if (
+            isinstance(frame, (TextFrame, LLMFullResponseStartFrame, LLMFullResponseEndFrame))
+            and frame.skip_tts
+        ):
+            await self.push_frame(frame, direction)
+        elif (
             isinstance(frame, TextFrame)
             and not isinstance(frame, InterimTranscriptionFrame)
             and not isinstance(frame, TranscriptionFrame)
