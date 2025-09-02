@@ -232,11 +232,11 @@ class AgentServerMessageType(str, Enum):
         Error: Error message.
         AddPartialTranscript: Partial transcript has been added.
         AddTranscript: Transcript has been added.
-        SpeechStarted: Speech has started.
-        SpeechEnded: Speech has ended.
+        UserSpeechStarted: Speech has started.
+        UserSpeechEnded: Speech has ended.
         TurnDetected: A turn has been detected.
-        InterimSegments: An interim segment has been detected.
-        FinalSegments: A final segment has been detected.
+        AddSegments: A final segment has been detected.
+        AddPartialSegments: An interim segment has been detected.
         SpeakersResult: Speakers result has been detected.
         Metrics: Metrics for the STT engine.
         SpeakerMetrics: Metrics relating to speakers.
@@ -270,13 +270,13 @@ class AgentServerMessageType(str, Enum):
     ADD_TRANSCRIPT = "AddTranscript"
 
     # VAD messages
-    SPEECH_STARTED = "SpeechStarted"
-    SPEECH_ENDED = "SpeechEnded"
+    USER_SPEECH_STARTED = "UserSpeechStarted"
+    USER_SPEECH_ENDED = "UserSpeechEnded"
 
     # Turn / segment messages
+    ADD_SEGMENTS = "AddSegments"
+    ADD_PARTIAL_SEGMENTS = "AddPartialSegments"
     TURN_DETECTED = "TurnDetected"
-    INTERIM_SEGMENTS = "InterimSegments"
-    FINAL_SEGMENTS = "FinalSegments"
 
     # Speaker messages
     SPEAKERS_RESULT = "SpeakersResult"
@@ -314,8 +314,8 @@ class AnnotationFlags(IntFlag):
     HAS_DISFLUENCY = auto()
     STARTS_WITH_DISFLUENCY = auto()
     ENDS_WITH_DISFLUENCY = auto()
-    ENDS_WITH_PUNCTUATION = auto()
     HIGH_DISFLUENCY_COUNT = auto()
+    ENDS_WITH_PUNCTUATION = auto()
     VERY_SLOW_SPEAKER = auto()
     SLOW_SPEAKER = auto()
     FAST_SPEAKER = auto()
@@ -371,7 +371,11 @@ class AnnotationResult:
 
     def __str__(self) -> str:
         """String representation of the flags."""
-        return f"{type(self).__name__}({self.flags})"
+        flags: list[str] = []
+        for flag in AnnotationFlags:
+            if self.flags & flag == flag and flag.name is not None:
+                flags.append(flag.name)
+        return f"{type(self).__name__}({', '.join(flags)})"
 
 
 @dataclass
@@ -432,7 +436,7 @@ class SpeakerSegment:
     timestamp: Optional[str] = None
     language: Optional[str] = None
     fragments: list[SpeechFragment] = field(default_factory=list)
-    annotation: AnnotationResult = AnnotationResult()
+    annotation: AnnotationResult = field(default_factory=AnnotationResult)
 
     @property
     def start_time(self) -> float:
@@ -488,7 +492,7 @@ class SpeakerSegment:
                 content += " " + frag.content
 
         # Format the text, if format is provided
-        if format is None or self.speaker_id is None:
+        if format is None:
             return content
         return format.format(
             **{
@@ -727,7 +731,7 @@ class SpeakerFragmentView:
         # Return the annotation result
         return result
 
-    def annotate(self, other: Optional["SpeakerFragmentView"]) -> AnnotationResult:
+    def compare_and_annotate(self, other: Optional["SpeakerFragmentView"]) -> AnnotationResult:
         """Compare two SpeakerFragmentView objects and return the differences.
 
         Args:

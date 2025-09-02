@@ -36,7 +36,9 @@ from ._models import (
 )
 
 DEBUG_MORE = os.getenv("SPEECHMATICS_DEBUG_MORE", "0").lower() in ["1", "true"]
-DEBUG_MESSAGES = os.getenv("SPEECHMATICS_DEBUG_MESSAGES", "0").lower() in ["1", "true"]
+
+if DEBUG_MORE:
+    import json
 
 
 class VoiceAgentClient(AsyncClient):
@@ -62,7 +64,7 @@ class VoiceAgentClient(AsyncClient):
             url: REST API endpoint URL. If None, uses SPEECHMATICS_RT_URL env var
                  or defaults to production endpoint.
             app: Optional application name to use in the endpoint URL.
-            config: Voice agent configuration.
+            config: Optional voice agent configuration.
         """
         # Default URL
         if not url:
@@ -97,6 +99,7 @@ class VoiceAgentClient(AsyncClient):
         self._speech_fragments: list[SpeechFragment] = []
         self._speech_fragments_lock: asyncio.Lock = asyncio.Lock()
         self._last_speech_fragments: list[SpeechFragment] = []
+        self._active_view: Optional[SpeakerFragmentView] = None
 
         # Speaking states
         self._is_speaking: bool = False
@@ -117,7 +120,7 @@ class VoiceAgentClient(AsyncClient):
         self._processor_task: Optional[asyncio.Task] = None
 
         # Emitter task
-        self._emitter_task: Optional[asyncio.Task] = None
+        self._finals_emitter_task: Optional[asyncio.Task] = None
 
         # Metrics emitter task
         self._metrics_emitter_interval: float = 10.0
@@ -214,7 +217,6 @@ class VoiceAgentClient(AsyncClient):
         # Recognition started event
         @self.once(ServerMessageType.RECOGNITION_STARTED)
         def _evt_on_recognition_started(message: dict[str, Any]):
-            self._logger.debug(f"Recognition started (session: {message.get('id')})")
             self._start_time = datetime.datetime.now(datetime.timezone.utc)
             self._is_ready_for_audio = True
 
@@ -228,17 +230,13 @@ class VoiceAgentClient(AsyncClient):
         def _evt_on_final_transcript(message: dict[str, Any]):
             self._handle_transcript(message, is_final=True)
 
-        # TODO - this should not be needed, as it forces finals internally?
-        # # End of utterance event
-        # if self._end_of_utterance_mode == EndOfUtteranceMode.FIXED:
-        #     @self.on(ServerMessageType.END_OF_UTTERANCE)
-        #     def _evt_on_end_of_utterance(message: dict[str, Any]):
-        #         self._logger.warning("End of utterance detected - **TODO**")
+        # End of utterance event
+        if self._end_of_utterance_mode == EndOfUtteranceMode.FIXED:
 
-        # End of Transcript
-        @self.on(ServerMessageType.END_OF_TRANSCRIPT)
-        def _evt_on_end_of_transcript(message: dict[str, Any]):
-            pass
+            @self.on(ServerMessageType.END_OF_UTTERANCE)
+            def _evt_on_end_of_utterance(message: dict[str, Any]):
+                self._logger.debug("End of utterance")
+                self.finalize_segments()
 
     async def connect(self) -> None:
         """Connect to the Speechmatics API.
@@ -377,10 +375,6 @@ class VoiceAgentClient(AsyncClient):
             message: The new Partial or Final from the STT engine.
             is_final: Whether the data is final or partial.
         """
-        # Debug payloads
-        if DEBUG_MESSAGES:
-            self._logger.debug(f"{message['message']}(message={message}, is_final={is_final})")
-
         # Add the speech fragments
         fragments_available = await self._add_speech_fragments(
             message=message,
@@ -415,22 +409,20 @@ class VoiceAgentClient(AsyncClient):
             end_time: The end time of the payload from the STT engine.
         """
         # Skip if no valid fragments
-        if not self._speech_fragments:
+        if not self._speech_fragments or end_time == 0 or self._speech_fragments[0]._type != "word":
             return
 
         # Get start of the first fragment
         start_time = self._speech_fragments[0].start_time
 
         # Skip if no partial word or if we have already calculated the TTFB for this word
-        if start_time == self._last_ttfb_time:
+        # Limit to once every 10 seconds as a minimum
+        if self._last_ttfb_time and start_time <= (self._last_ttfb_time):
             return
 
         # Calculate the time difference (convert to ms)
         self._last_ttfb = round((self._total_time - end_time) * 1000)
-        self._last_ttfb_time = start_time
-
-        # Debug
-        self._logger.debug(f"TTFB {self._total_time} - {start_time} = {self._last_ttfb}")
+        self._last_ttfb_time = end_time
 
         # Emit the TTFB
         async def emit_ttfb() -> None:
@@ -468,6 +460,11 @@ class VoiceAgentClient(AsyncClient):
         async with self._speech_fragments_lock:
             # Parsed new speech data from the STT engine
             fragments: list[SpeechFragment] = []
+
+            # Metadata
+            metadata = message.get("metadata", {})
+            payload_start_time = metadata.get("start_time", 0)
+            payload_end_time = metadata.get("end_time", 0)
 
             # Iterate over the results in the payload
             for result in message.get("results", []):
@@ -522,31 +519,55 @@ class VoiceAgentClient(AsyncClient):
             if not is_final:
                 self._vad_evaluation(fragments)
 
-            # Remove existing partials, as new partials and finals are provided
-            self._speech_fragments = [frag for frag in self._speech_fragments if frag.is_final]
+            # Fragments to retain
+            # - Outside of the bounds of the payload
+            # - Not a trailing fragment with same start time as payload end time (end of sentence etc.)
+            # retained_fragments = [
+            #     frag
+            #     for frag in self._speech_fragments
+            #     if not (
+            #         frag.start_time >= payload_start_time
+            #         and frag.end_time <= payload_end_time
+            #         and frag.is_final is False
+            #         # and frag.start_time != payload_end_time
+            #     )
+            # ]
+            retained_fragments = [frag for frag in self._speech_fragments if frag.is_final]
 
-            # Add the fragments to the speech data
+            # Re-structure the speech fragments
+            self._speech_fragments = retained_fragments.copy()
             self._speech_fragments.extend(fragments)
+            self._speech_fragments.sort(key=lambda x: x.start_time)
+
+            # Debug the fragments
+            if DEBUG_MORE:
+                debug_payload = {
+                    "final": is_final,
+                    "start_time": payload_start_time,
+                    "end_time": payload_end_time,
+                    "keeping": [f.content for f in retained_fragments],
+                    "adding": [f.content for f in fragments],
+                    "transcript": metadata.get("transcript", ""),
+                    "full": [
+                        [f.content, f.start_time, f.end_time, f.is_final]
+                        for f in self._speech_fragments
+                    ],
+                }
+                self._logger.debug(json.dumps(debug_payload))
 
             # Update TTFB
             if not is_final:
-                self._calculate_ttfb(end_time=message.get("metadata", {}).get("end_time", 0))
+                self._calculate_ttfb(end_time=payload_end_time)
 
             # Fragments available
             return len(self._speech_fragments) > 0
 
-    async def _process_speech_fragments(
-        self, finalize: bool = False, emit_final_delay: Optional[float] = None
-    ) -> None:
+    async def _process_speech_fragments(self) -> None:
         """Process the speech fragments.
 
         Compares the current speech fragments against the last set of speech fragments.
         When segments are emitted, they are then removed from the buffer of fragments
         so the next comparison is based on the remaining + new fragments.
-
-        Args:
-            finalize: Optional override to emit segments, even if no changes.
-            emit_final_delay: Optional delay before finalizing partial segments.
         """
         async with self._speech_fragments_lock:
             # Current transcription
@@ -564,39 +585,43 @@ class VoiceAgentClient(AsyncClient):
                 focus_speakers=self._dz_config.focus_speakers,
             )
 
-            # Compare this against the previous transcript
-            annotation_result = current_view.annotate(last_view)
+            # If no segments, return
+            if current_view.segment_count == 0:
+                return
 
-            # Emit segments
-            should_emit: bool = False
+            # Compare this against the previous transcript
+            annotation_result = current_view.compare_and_annotate(last_view)
 
             # TODO - Consider a config option to split segments into smaller chunks for long transcripts?
 
-            # Force segments to be emitted
-            if finalize:
-                should_emit = True
-                if emit_final_delay is None:
-                    emit_final_delay = 0.001
-
-            # Calculate the delay
-            else:
-                should_emit, emit_final_delay = self._calculate_final_delay(
-                    view=current_view, annotation=annotation_result
-                )
+            # Determine if there has been a change and delay before finalizing
+            view_changed, delay_to_finalize = self._calc_delay_to_finalize(
+                view=current_view, view_changes=annotation_result
+            )
 
             # Emit segments
-            if should_emit:
-                asyncio.create_task(
-                    self._emit_segments(current_view, finalize_delay=emit_final_delay)
-                )
+            if view_changed:
+                # Update the active view
+                self._active_view = current_view
+
+                # Stop any existing emitter task
+                if self._finals_emitter_task is not None:
+                    self._finals_emitter_task.cancel()
+
+                # Emit partial segments
+                asyncio.create_task(self._emit_partial_segments())
+
+                # Emit final segments
+                if delay_to_finalize is not None:
+                    asyncio.create_task(self._emit_final_segments(delay=delay_to_finalize))
 
             # Copy the data
             self._last_speech_fragments = self._speech_fragments.copy()
 
-    def _calculate_final_delay(
+    def _calc_delay_to_finalize(
         self,
         view: SpeakerFragmentView,
-        annotation: AnnotationResult,
+        view_changes: AnnotationResult,
     ) -> Tuple[bool, float | None]:
         """Calculate the delay before finalizing segments.
 
@@ -605,11 +630,15 @@ class VoiceAgentClient(AsyncClient):
 
         Args:
             view: The speaker fragment to evaluate.
-            annotation: The annotation result to use for evaluation.
+            view_changes: The annotation result to use for evaluation.
 
         Returns:
             Tuple of (should_emit, emit_final_delay)
         """
+        # Skip if no segments
+        if view.segment_count == 0:
+            return False, None
+
         # Emit segments
         emit_final_delay: Optional[float] = None
         should_emit: bool = False
@@ -620,101 +649,138 @@ class VoiceAgentClient(AsyncClient):
             view.segments[last_active_segment_index] if last_active_segment_index > -1 else None
         )
 
-        # If this is NEW or UPDATED_STRIPPED_LCASE
-        if annotation.any(AnnotationFlags.NEW, AnnotationFlags.UPDATED_STRIPPED_LCASE):
+        # Elapsed time from last segment to now
+        # elapsed_time = (
+        #     self._total_time - last_active_segment.end_time
+        #     if last_active_segment
+        #     else view.end_time
+        # )
+
+        # If this is NEW or UPDATED_FULL_LCASE
+        if view_changes.any(AnnotationFlags.NEW, AnnotationFlags.UPDATED_FULL_LCASE):
             """Process the annotation flags to determine how long before sending a final segment."""
 
-            # Last segment ends with EOS, emit final immediately
-            if last_active_segment and last_active_segment.annotation.has(
-                AnnotationFlags.ENDS_WITH_EOS
-            ):
-                emit_final_delay = 0.001
-
             # Fallback when using FIXED
-            elif self._end_of_utterance_mode == EndOfUtteranceMode.FIXED:
-                emit_final_delay = self._end_of_utterance_delay * 1.5
+            if self._end_of_utterance_mode == EndOfUtteranceMode.FIXED:
+                emit_final_delay = self._end_of_utterance_delay * 5.0
 
             # Timer for when ADAPTIVE
-            elif self._end_of_utterance_mode == EndOfUtteranceMode.ADAPTIVE:
+            elif self._end_of_utterance_mode == EndOfUtteranceMode.ADAPTIVE and last_active_segment:
                 """Check the contents of the last segment."
 
                 Check for:
                  - ends with a disfluency
                 """
 
-                # Default
-                emit_final_delay = self._end_of_utterance_delay
+                # Delay multiplier
+                multiplier = 1.5
 
-                # Last segment ends with a disfluency
-                if last_active_segment and last_active_segment.annotation.has(
-                    AnnotationFlags.ENDS_WITH_DISFLUENCY
-                ):
-                    emit_final_delay = self._end_of_utterance_delay * 3.0
+                # Very speaking
+                if last_active_segment.annotation.has(AnnotationFlags.VERY_SLOW_SPEAKER):
+                    multiplier *= 3.0
+
+                # Slow speaking
+                if last_active_segment.annotation.has(AnnotationFlags.SLOW_SPEAKER):
+                    multiplier *= 1.5
+
+                # Has a disfluency
+                if last_active_segment.annotation.has(AnnotationFlags.HAS_DISFLUENCY):
+                    multiplier *= 1.5
+
+                # Ends with a disfluency
+                if last_active_segment.annotation.has(AnnotationFlags.ENDS_WITH_DISFLUENCY):
+                    multiplier *= 4.0
+
+                # Calculate the delay
+                emit_final_delay = self._end_of_utterance_delay * multiplier
+
+                # Debug
+                self._logger.debug(
+                    f"{view_changes} {last_active_segment.annotation} -> {emit_final_delay} ({self._end_of_utterance_delay} * {multiplier})"
+                )
 
                 # TODO - Other checks / end of turn detection
 
             # Emit segments
             should_emit = True
 
+        # Remove any elapsed time from the delay
+        # if emit_final_delay is not None:
+        #     emit_final_delay = max(
+        #         emit_final_delay - elapsed_time,
+        #         self._end_of_utterance_delay - elapsed_time,
+        #         0.001,
+        #     )
+
         # Return the result
         return should_emit, emit_final_delay
 
-    def finalize_segments(self, emit_final_delay: Optional[float] = None):
+    def finalize_segments(self, ttl: Optional[float] = None):
         """Finalize segments.
 
         This function will emit segments in the buffer without any further checks
         on the contents of the segments. It should only be used if the end of utterance
         mode has been set to `NONE`.
 
+        If the ttl is set to zero, then finalization will be forced through without yielding
+        for any remaining STT messages.
+
         Args:
-            emit_final_delay: Optional delay before finalizing partial segments.
+            ttl: Optional delay before finalizing partial segments (defaults to 0.01 seconds).
         """
-        asyncio.create_task(
-            self._process_speech_fragments(finalize=True, emit_final_delay=emit_final_delay)
+
+        async def _emit():
+            await asyncio.sleep(ttl or 0.01)
+            await self._emit_final_segments()
+
+        asyncio.create_task(_emit())
+
+    async def _emit_partial_segments(self) -> None:
+        """Emit partial segments to listeners."""
+        # Skip if no segments
+        if self._active_view is None or self._active_view.segment_count == 0:
+            return
+
+        # Emit partial segments
+        self.emit(
+            AgentServerMessageType.ADD_PARTIAL_SEGMENTS,
+            {"segments": self._active_view.segments},
         )
 
-    async def _emit_segments(
-        self, view: SpeakerFragmentView, finalize_delay: Optional[float] = None
-    ) -> None:
-        """Emit segments to listeners.
-
-        Send speech segments to the pipeline. Will also emit speaking start / end events for VAD
-        to be controlled by the client / framework.
+    async def _emit_final_segments(self, delay: float = 0) -> None:
+        """Emit final segments to listeners.
 
         Args:
-            view: The speaker fragment view to emit segments from.
-            finalize_delay: Optional delay before finalizing partial segments.
+            delay: Delay before finalizing partial segments.
         """
-        # Clear the emitter timer
-        if self._emitter_task is not None:
-            self._emitter_task.cancel()
+        # Check delay within bounds
+        if delay < 0:
+            raise ValueError("Delay must be non-negative")
+        elif delay > 30:
+            raise ValueError("Delay must be less than 30 seconds")
 
-        # Emit interim results
-        try:
-            self.emit(AgentServerMessageType.INTERIM_SEGMENTS, {"segments": view.segments})
-        except Exception:
-            pass
+        # Skip if no segments
+        if self._active_view is None or self._active_view.segment_count == 0:
+            return
 
-        # Emit finalized segments
-        async def emit_after_delay(delay: float):
-            # Wait for the delay (can be cancelled)
-            if delay > 0:
-                await asyncio.sleep(delay)
+        # Stop any existing emitter task
+        if self._finals_emitter_task is not None:
+            self._finals_emitter_task.cancel()
+
+        async def emit_finals_now():
+            """Emit final segments."""
+            # Skip if no segments
+            if self._active_view is None or self._active_view.segment_count == 0:
+                return
+
+            # Get the active view
+            view = self._active_view
 
             # Find out if we have segments to emit
             segments_to_emit = view.last_active_segment_index + 1
 
             # Only finalize if there are valid segments
             if segments_to_emit > 0:
-                # Number of segments held back
-                segments_held_back = view.segment_count - segments_to_emit
-
-                # Log if some segments are missing
-                if segments_held_back:
-                    self._logger.debug(
-                        f"Holding segments: {segments_held_back} of {view.segment_count}"
-                    )
-
                 # Accumulate all of the fragments for segments up to and including the last_active_index
                 fragments_to_emit = []
                 for i in range(segments_to_emit):
@@ -729,13 +795,10 @@ class VoiceAgentClient(AsyncClient):
                 )
 
                 # Emit the segments
-                try:
-                    self.emit(
-                        AgentServerMessageType.FINAL_SEGMENTS,
-                        {"segments": trimmed_view.segments},
-                    )
-                except Exception:
-                    pass
+                self.emit(
+                    AgentServerMessageType.ADD_SEGMENTS,
+                    {"segments": trimmed_view.segments},
+                )
 
                 # Last end time
                 self._trim_before_time = trimmed_view.end_time + 0.01
@@ -750,12 +813,26 @@ class VoiceAgentClient(AsyncClient):
                 # Reset previous fragments
                 self._last_speech_fragments = self._speech_fragments.copy()
 
-            # Reset the task
-            self._emitter_task = None
+        async def emit_finals_after_delay(_delay: float):
+            """Yield before emitting final segments after a delay."""
+            # Wait for the delay (can be cancelled)
+            if _delay > 0:
+                await asyncio.sleep(_delay)
 
-        # Start the timer
-        if finalize_delay is not None:
-            self._emitter_task = asyncio.create_task(emit_after_delay(finalize_delay))
+            # Emit the segments
+            await emit_finals_now()
+
+            # Reset the task
+            self._finals_emitter_task = None
+
+        if DEBUG_MORE:
+            self._logger.debug(f"Will emit final segments after {delay} seconds")
+
+        # Emit with delay or immediately
+        if delay > 0:
+            self._finals_emitter_task = asyncio.create_task(emit_finals_after_delay(delay))
+        else:
+            self._finals_emitter_task = asyncio.create_task(emit_finals_now())
 
     def _vad_evaluation(self, fragments: list[SpeechFragment]):
         """Emit a VAD event.
@@ -806,12 +883,12 @@ class VoiceAgentClient(AsyncClient):
             if already_speaking and speaker_changed:
                 try:
                     self.emit(
-                        AgentServerMessageType.SPEECH_ENDED,
-                        SpeakerVADStatus(speaker_id=current_speaker, is_active=False),
+                        AgentServerMessageType.USER_SPEECH_ENDED,
+                        {"status": SpeakerVADStatus(speaker_id=current_speaker, is_active=False)},
                     )
                     self.emit(
-                        AgentServerMessageType.SPEECH_STARTED,
-                        SpeakerVADStatus(speaker_id=speaker, is_active=True),
+                        AgentServerMessageType.USER_SPEECH_STARTED,
+                        {"status": SpeakerVADStatus(speaker_id=speaker, is_active=True)},
                     )
                 except Exception:
                     pass
@@ -830,11 +907,11 @@ class VoiceAgentClient(AsyncClient):
         try:
             self.emit(
                 (
-                    AgentServerMessageType.SPEECH_STARTED
+                    AgentServerMessageType.USER_SPEECH_STARTED
                     if self._is_speaking
-                    else AgentServerMessageType.SPEECH_ENDED
+                    else AgentServerMessageType.USER_SPEECH_ENDED
                 ),
-                SpeakerVADStatus(speaker_id=speaker, is_active=self._is_speaking),
+                {"status": SpeakerVADStatus(speaker_id=speaker, is_active=self._is_speaking)},
             )
         except Exception:
             pass

@@ -60,6 +60,9 @@ except ModuleNotFoundError as e:
 # Load environment variables
 load_dotenv()
 
+# TODO - Enable SDK logging (during dev)
+logger.enable("")
+
 
 class SpeechmaticsSTTService(STTService):
     """Speechmatics STT service implementation.
@@ -283,6 +286,7 @@ class SpeechmaticsSTTService(STTService):
 
         # Framework options
         self._enable_vad: bool = params.enable_vad
+        self._end_of_utterance_silence_trigger: float = params.end_of_utterance_silence_trigger
         self._speaker_active_format: str = params.speaker_active_format
         self._speaker_passive_format: str = (
             params.speaker_passive_format or params.speaker_active_format
@@ -323,13 +327,10 @@ class SpeechmaticsSTTService(STTService):
         # Forward to parent
         await super().process_frame(frame, direction)
 
-        # TODO - process certain frames
-        # if isinstance(frame, UserStartedSpeakingFrame):
-        #     await self.start_ttfb_metrics()
-        # elif isinstance(frame, UserStoppedSpeakingFrame):
-        #     if self._vad_force_turn_endpoint:
-        #         await self._websocket.send(json.dumps({"type": "ForceEndpoint"}))
-        #     await self.start_processing_metrics()
+        # Force finalization
+        if isinstance(frame, UserStoppedSpeakingFrame):
+            if not self._enable_vad:
+                await self._client.finalize_segments(self._end_of_utterance_silence_trigger)
 
     @traced_stt
     async def _trace_transcription(self, transcript: str, is_final: bool, language: Language):
@@ -405,35 +406,37 @@ class SpeechmaticsSTTService(STTService):
         self._client: VoiceAgentClient = VoiceAgentClient(
             api_key=self._api_key,
             url=self._base_url,
-            app=f"pipecat/{pipecat_version}/",
+            app=f"pipecat/{pipecat_version}",
             config=self._config,
         )
 
         # Interim segment event
-        @self._client.on(AgentServerMessageType.INTERIM_SEGMENTS)
+        @self._client.on(AgentServerMessageType.ADD_PARTIAL_SEGMENTS)
         def _evt_on_interim_segment(message: dict[str, Any]):
-            asyncio.run_coroutine_threadsafe(
-                self._send_frames(message["segments"]), self.get_event_loop()
-            )
+            segments: list[SpeakerSegment] = message["segments"]
+            asyncio.run_coroutine_threadsafe(self._send_frames(segments), self.get_event_loop())
 
         # Final segment event
-        @self._client.on(AgentServerMessageType.FINAL_SEGMENTS)
+        @self._client.on(AgentServerMessageType.ADD_SEGMENTS)
         def _evt_on_final_segment(message: dict[str, Any]):
+            segments: list[SpeakerSegment] = message["segments"]
             asyncio.run_coroutine_threadsafe(
-                self._send_frames(message["segments"], finalized=True), self.get_event_loop()
+                self._send_frames(segments, finalized=True), self.get_event_loop()
             )
 
         # VAD events
         if self._enable_vad:
 
-            @self._client.on(AgentServerMessageType.SPEECH_STARTED)
-            def _evt_on_speech_started(status: SpeakerVADStatus):
+            @self._client.on(AgentServerMessageType.USER_SPEECH_STARTED)
+            def _evt_on_speech_started(message: dict[str, Any]):
+                status: SpeakerVADStatus = message["status"]
                 asyncio.run_coroutine_threadsafe(
                     self._send_vad_frame(speaking=status.is_active), self.get_event_loop()
                 )
 
-            @self._client.on(AgentServerMessageType.SPEECH_ENDED)
-            def _evt_on_speech_ended(status: SpeakerVADStatus):
+            @self._client.on(AgentServerMessageType.USER_SPEECH_ENDED)
+            def _evt_on_speech_ended(message: dict[str, Any]):
+                status: SpeakerVADStatus = message["status"]
                 asyncio.run_coroutine_threadsafe(
                     self._send_vad_frame(speaking=status.is_active), self.get_event_loop()
                 )
@@ -551,7 +554,7 @@ class SpeechmaticsSTTService(STTService):
             frames += [TranscriptionFrame(**attr_from_segment(segment)) for segment in segments]
             finalized_text = "|".join([s.format_text() for s in segments])
             await self._trace_transcription(finalized_text, True, segments[0].language)
-            logger.debug(f"{self} finalized transcript: {finalized_text}")
+            logger.debug(f"{self} finalized transcript: {[f.text for f in frames]}")
 
         # Return as interim results (unformatted)
         else:
