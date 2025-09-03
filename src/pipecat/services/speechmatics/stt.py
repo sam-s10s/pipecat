@@ -541,7 +541,7 @@ class SpeechmaticsSTTService(STTService):
                     if segment.is_active
                     else self._speaker_passive_format
                 ),
-                "user_id": segment.speaker_id or "UU",
+                "user_id": segment.speaker_id or "",
                 "timestamp": segment.timestamp,
                 "language": segment.language,
             }
