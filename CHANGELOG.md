@@ -7,7 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## Added
+### Added
+
+- Added new frames `InputTransportMessageUrgentFrame` and
+  `DailyInputTransportMessageUrgentFrame` for transport messages received from
+  external sources.
+  
+- Added `UserSpeakingFrame`. This will be sent upstream and downstream while VAD
+  detects the user is speaking.
+
+- Expanded support for universal `LLMContext` to more LLM services. Using the
+  universal `LLMContext` and associated `LLMContextAggregatorPair` is a
+  pre-requisite for using `LLMSwitcher` to switch between LLMs at runtime.
+  Here are the newly-supported services:
+
+  - Azure
+  - Cerebras
+  - Deepseek
+  - Fireworks AI
+  - Google Vertex AI
+  - Grok
+  - Groq
+  - Mistral
+  - NVIDIA NIM
+  - Ollama
+  - OpenPipe
+  - OpenRouter
+  - Perplexity
+  - Qwen
+  - SambaNova
+  - Together.ai
+
+- Added support for WhatsApp User-initiated Calls.
+
+- Added new audio filter `AICFilter`, speech enhancement for improving VAD/STT
+  performance, no ONNX dependency.
+  See https://ai-coustics.com/sdk/
+
+- Added a timeout around cancel input tasks to prevent indefinite hangs when
+  cancellation is swallowed by third-party code.
 
 - Added `pipecat.extensions.ivr` for automated IVR system navigation with
   configurable goals and conversation handling. Supports DTMF input, verbal
@@ -42,18 +80,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sending it through the transport. This makes sending DTMF generic across all
   output transports.
 
-- Added new config parameters to `GladiaSTTService`. 
+- Added new config parameters to `GladiaSTTService`.
   - PreProcessingConfig > `audio_enhancer` to enhance audio quality.
   - CustomVocabularyItem > `pronunciations` and `language` to specify special pronunciations and in which language it will be pronounced.
 
-## Changed
+### Changed
+
+- `UserStartedSpeakingFrame` and `UserStoppedSpeakingFrame` are also pushed
+  upstream.
+
+- `ParallelPipeline` now waits for `CancelFrame` to finish in all branches
+  before pushing it downstream.
+
+- Added `sip_codecs` to the `DailyRoomSipParams`.
+
+- Updated the `configure()` function in `pipecat.runner.daily` to include new
+  args to create SIP-enabled rooms. Additionally, added new args to control the
+  room and token expiration durations.
 
 - `pipecat.frames.frames.KeypadEntry` is deprecated and has been moved to
   `pipecat.audio.dtmf.types.KeypadEntry`.
 
 - Updated `RimeTTSService`'s flush_audio message to conform with Rime's official API.
 
-## Removed
+- Updated the default model for `CerebrasLLMService` to GPT-OSS-120B.
+
+### Removed
 
 - Remove `StopInterruptionFrame`. This was a legacy frame that was not being
   used really anywhere and it didn't provide any useful meaning. It was only
@@ -65,14 +117,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Remove deprecated `DailyTransport.send_dtmf()`.
 
-## Deprecated
+### Deprecated
+
+- Transports have been re-organized.
+
+  ```
+  pipecat.transports.network.small_webrtc        -> pipecat.transports.smallwebrtc.transport
+  pipecat.transports.network.webrtc_connection   -> pipecat.transports.smallwebrtc.connection
+  pipecat.transports.network.websocket_client    -> pipecat.transports.websocket.client
+  pipecat.transports.network.websocket_server    -> pipecat.transports.websocket.server
+  pipecat.transports.network.fastapi_websocket   -> pipecat.transports.websocket.fastapi
+  pipecat.transports.services.daily              -> pipecat.transports.daily.transport
+  pipecat.transports.services.helpers.daily_rest -> pipecat.transports.daily.utils
+  pipecat.transports.services.livekit            -> pipecat.transports.livekit.transport
+  pipecat.transports.services.tavus              -> pipecat.transports.tavus.transport
+  ```
 
 - `pipecat.frames.frames.KeypadEntry` is deprecated use
   `pipecat.audio.dtmf.types.KeypadEntry` instead.
 
-## Fixed
+### Fixed
+
+- Fixed an issue where messages received from the transport were always being resent.
+
+- Fixed `SmallWebRTCTransport` to not use `mid` to decide if the transceiver should
+  be `sendrecv` or not.
+
+- Fixed an issue where Deepgram swallowed `asyncio.CancelledError` during
+  disconnect, preventing tasks from being cancelled.
 
 - Fixed an issue where `PipelineTask` was not cleaning up the observers.
+
+### Performance
+
+- Reduced latency and improved memory performance in `Mem0MemoryService`.
 
 ## [0.0.82] - 2025-08-28
 
