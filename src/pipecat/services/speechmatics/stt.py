@@ -96,6 +96,11 @@ class SpeechmaticsSTTService(STTService):
                 word frames. The value must be lower than max_delay.
                 Defaults to 0.5.
 
+            end_of_utterance_max_delay: Maximum delay in seconds for end of utterance detection.
+                This is used to wait for any further transcribed words before emitting the final
+                word frames. The value must be lower than max_delay.
+                Defaults to 10.0.
+
             end_of_utterance_mode: End of utterance delay mode. When ADAPTIVE is used, the delay
                 can be adjusted on the content of what the most recent speaker has said, such as
                 rate of speech and whether they have any pauses or disfluencies. When FIXED is used,
@@ -187,6 +192,7 @@ class SpeechmaticsSTTService(STTService):
         enable_vad: bool = False
         max_delay: float = 1.0
         end_of_utterance_silence_trigger: float = 0.5
+        end_of_utterance_max_delay: float = 10.0
         end_of_utterance_mode: EndOfUtteranceMode = EndOfUtteranceMode.FIXED
         additional_vocab: list[AdditionalVocabEntry] = []
         punctuation_overrides: dict | None = None
@@ -326,7 +332,7 @@ class SpeechmaticsSTTService(STTService):
         # Force finalization
         if isinstance(frame, UserStoppedSpeakingFrame):
             if not self._enable_vad:
-                await self._client.finalize_segments(self._end_of_utterance_silence_trigger)
+                self._client.finalize_segments()
 
     @traced_stt
     async def _trace_transcription(self, transcript: str, is_final: bool, language: Language):
@@ -427,14 +433,16 @@ class SpeechmaticsSTTService(STTService):
             def _evt_on_speech_started(message: dict[str, Any]):
                 status: SpeakerVADStatus = message["status"]
                 asyncio.run_coroutine_threadsafe(
-                    self._send_vad_frame(speaking=status.is_active), self.get_event_loop()
+                    self._send_vad_frame(speaking=status.is_active),
+                    self.get_event_loop(),
                 )
 
             @self._client.on(AgentServerMessageType.USER_SPEECH_ENDED)
             def _evt_on_speech_ended(message: dict[str, Any]):
                 status: SpeakerVADStatus = message["status"]
                 asyncio.run_coroutine_threadsafe(
-                    self._send_vad_frame(speaking=status.is_active), self.get_event_loop()
+                    self._send_vad_frame(speaking=status.is_active),
+                    self.get_event_loop(),
                 )
 
         # Speaker Result
@@ -456,7 +464,6 @@ class SpeechmaticsSTTService(STTService):
         # TTFB Metrics
         @self._client.on(AgentServerMessageType.TTFB_METRICS)
         def _evt_on_ttfb_metrics(message: dict[str, Any]):
-            logger.debug(f"⏰ TTFB metrics received from STT: {message}")
             asyncio.run_coroutine_threadsafe(
                 self._emit_ttfb_metrics(message.get("ttfb")), self.get_event_loop()
             )
@@ -499,6 +506,7 @@ class SpeechmaticsSTTService(STTService):
             # Features
             max_delay=params.max_delay,
             end_of_utterance_silence_trigger=params.end_of_utterance_silence_trigger,
+            end_of_utterance_max_delay=params.end_of_utterance_max_delay,
             end_of_utterance_mode=params.end_of_utterance_mode,
             additional_vocab=params.additional_vocab,
             punctuation_overrides=params.punctuation_overrides,
