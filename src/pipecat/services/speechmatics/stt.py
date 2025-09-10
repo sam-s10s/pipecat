@@ -89,12 +89,12 @@ class SpeechmaticsSTTService(STTService):
 
             max_delay: Maximum delay in seconds for transcription. This forces the STT engine to
                 speed up the processing of transcribed words and reduces the interval between partial
-                and final results. Lower values can have an impact on accuracy. Defaults to 1.0.
+                and final results. Lower values can have an impact on accuracy. Defaults to 0.7.
 
             end_of_utterance_silence_trigger: Maximum delay in seconds for end of utterance trigger.
                 The delay is used to wait for any further transcribed words before emitting the final
                 word frames. The value must be lower than max_delay.
-                Defaults to 0.5.
+                Defaults to 0.2.
 
             end_of_utterance_max_delay: Maximum delay in seconds for end of utterance detection.
                 This is used to wait for any further transcribed words before emitting the final
@@ -178,7 +178,6 @@ class SpeechmaticsSTTService(STTService):
                 Refer to our examples on the format of the known_speakers parameter.
                 Defaults to [].
 
-            chunk_size: Audio chunk size for streaming. Defaults to 160.
             audio_encoding: Audio encoding format. Defaults to AudioEncoding.PCM_S16LE.
         """
 
@@ -190,8 +189,8 @@ class SpeechmaticsSTTService(STTService):
 
         # Features
         enable_vad: bool = False
-        max_delay: float = 1.0
-        end_of_utterance_silence_trigger: float = 0.5
+        max_delay: float = 0.7
+        end_of_utterance_silence_trigger: float = 0.2
         end_of_utterance_max_delay: float = 10.0
         end_of_utterance_mode: EndOfUtteranceMode = EndOfUtteranceMode.FIXED
         additional_vocab: list[AdditionalVocabEntry] = []
@@ -210,7 +209,6 @@ class SpeechmaticsSTTService(STTService):
         known_speakers: list[DiarizationKnownSpeaker] = []
 
         # Audio
-        chunk_size: int = 160
         audio_encoding: AudioEncoding = AudioEncoding.PCM_S16LE
 
     class UpdateParams(BaseModel):
@@ -273,6 +271,8 @@ class SpeechmaticsSTTService(STTService):
             base_url or os.getenv("SPEECHMATICS_RT_URL") or "wss://eu2.rt.speechmatics.com/v2"
         )
 
+        print(self._base_url)
+
         # Check we have required attributes
         if not self._api_key:
             raise ValueError("Missing Speechmatics API key")
@@ -331,7 +331,7 @@ class SpeechmaticsSTTService(STTService):
 
         # Force finalization
         if isinstance(frame, UserStoppedSpeakingFrame):
-            if not self._enable_vad:
+            if not self._enable_vad and self._client is not None:
                 self._client.finalize_segments()
 
     @traced_stt
@@ -429,7 +429,7 @@ class SpeechmaticsSTTService(STTService):
         # VAD events
         if self._enable_vad:
 
-            @self._client.on(AgentServerMessageType.USER_SPEECH_STARTED)
+            @self._client.on(AgentServerMessageType.SPEAKING_STARTED)
             def _evt_on_speech_started(message: dict[str, Any]):
                 status: SpeakerVADStatus = message["status"]
                 asyncio.run_coroutine_threadsafe(
@@ -437,13 +437,17 @@ class SpeechmaticsSTTService(STTService):
                     self.get_event_loop(),
                 )
 
-            @self._client.on(AgentServerMessageType.USER_SPEECH_ENDED)
+            @self._client.on(AgentServerMessageType.SPEAKING_ENDED)
             def _evt_on_speech_ended(message: dict[str, Any]):
                 status: SpeakerVADStatus = message["status"]
                 asyncio.run_coroutine_threadsafe(
                     self._send_vad_frame(speaking=status.is_active),
                     self.get_event_loop(),
                 )
+
+            @self._client.on(AgentServerMessageType.END_OF_TURN)
+            def _evt_on_speech_ended(message: dict[str, Any]):
+                logger.debug(message)
 
         # Speaker Result
         if self._config.enable_diarization:
@@ -523,7 +527,6 @@ class SpeechmaticsSTTService(STTService):
             known_speakers=params.known_speakers,
             # Audio
             sample_rate=sample_rate,
-            chunk_size=params.chunk_size,
             audio_encoding=params.audio_encoding,
         )
 
@@ -552,6 +555,7 @@ class SpeechmaticsSTTService(STTService):
                 "user_id": segment.speaker_id or "",
                 "timestamp": segment.timestamp,
                 "language": segment.language,
+                "result": [r.result for r in segment.fragments if r.result],
             }
 
         # If final, then re-parse into TranscriptionFrame
