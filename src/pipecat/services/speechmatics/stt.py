@@ -17,12 +17,12 @@ from pydantic import BaseModel
 
 from pipecat import __version__ as pipecat_version
 from pipecat.frames.frames import (
-    BotInterruptionFrame,
     CancelFrame,
     EndFrame,
     ErrorFrame,
     Frame,
     InterimTranscriptionFrame,
+    InterruptionTaskFrame,
     StartFrame,
     TranscriptionFrame,
     UserStartedSpeakingFrame,
@@ -332,7 +332,7 @@ class SpeechmaticsSTTService(STTService):
         # Force finalization
         if isinstance(frame, UserStoppedSpeakingFrame):
             if not self._enable_vad and self._client is not None:
-                self._client.finalize_segments()
+                self._client.finalize()
 
     @traced_stt
     async def _trace_transcription(self, transcript: str, is_final: bool, language: Language):
@@ -445,8 +445,8 @@ class SpeechmaticsSTTService(STTService):
                     self.get_event_loop(),
                 )
 
-            @self._client.on(AgentServerMessageType.END_OF_TURN)
-            def _evt_on_speech_ended(message: dict[str, Any]):
+            @self._client.on(AgentServerMessageType.END_OF_UTTERANCE)
+            def _evt_on_turn_ended(message: dict[str, Any]):
                 logger.debug(message)
 
         # Speaker Result
@@ -580,7 +580,7 @@ class SpeechmaticsSTTService(STTService):
         """Send VAD frame to the pipeline.
 
         This will emit a UserStartedSpeakingFrame or UserStoppedSpeakingFrame
-        depending on the value of `speaking`. It will also emit a BotInterruptionFrame
+        depending on the value of `speaking`. It will also emit a InterruptionTaskFrame
         for the pipeline to handle interruption of the bot.
 
         Args:
@@ -598,7 +598,7 @@ class SpeechmaticsSTTService(STTService):
         if speaking:
             logger.debug(f"{self} user started speaking")
             self._is_speaking = True
-            upstream_frames += [BotInterruptionFrame()]
+            upstream_frames += [InterruptionTaskFrame()]
             downstream_frames += [UserStartedSpeakingFrame()]
 
         # User has stopped speaking
