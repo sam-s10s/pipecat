@@ -32,7 +32,6 @@ from pipecat.frames.frames import (
     LLMMessagesFrame,
     LLMTextFrame,
     LLMUpdateSettingsFrame,
-    VisionImageRawFrame,
 )
 from pipecat.metrics.metrics import LLMTokenUsage
 from pipecat.processors.aggregators.llm_context import LLMContext
@@ -245,16 +244,11 @@ class BaseOpenAILLMService(LLMService):
         params.update(self._settings["extra"])
         return params
 
-    async def run_inference(
-        self, context: LLMContext | OpenAILLMContext, system_instruction: Optional[str] = None
-    ) -> Optional[str]:
+    async def run_inference(self, context: LLMContext | OpenAILLMContext) -> Optional[str]:
         """Run a one-shot, out-of-band (i.e. out-of-pipeline) inference with the given LLM context.
 
         Args:
             context: The LLM context containing conversation history.
-            system_instruction: Optional system instruction to guide the LLM's
-              behavior. You could also (again, optionally) provide a system
-              instruction directly in the context.
 
         Returns:
             The LLM's response as a string, or None if no response is generated.
@@ -279,7 +273,7 @@ class BaseOpenAILLMService(LLMService):
         self, context: OpenAILLMContext
     ) -> AsyncStream[ChatCompletionChunk]:
         logger.debug(
-            f"{self}: Generating chat from OpenAI context {context.get_messages_for_logging()}"
+            f"{self}: Generating chat from LLM-specific context {context.get_messages_for_logging()}"
         )
 
         messages: List[ChatCompletionMessageParam] = context.get_messages()
@@ -423,8 +417,8 @@ class BaseOpenAILLMService(LLMService):
         """Process frames for LLM completion requests.
 
         Handles OpenAILLMContextFrame, LLMContextFrame, LLMMessagesFrame,
-        VisionImageRawFrame, and LLMUpdateSettingsFrame to trigger LLM
-        completions and manage settings.
+        and LLMUpdateSettingsFrame to trigger LLM completions and manage
+        settings.
 
         Args:
             frame: The frame to process.
@@ -443,16 +437,6 @@ class BaseOpenAILLMService(LLMService):
             # NOTE: LLMMessagesFrame is deprecated, so we don't support the newer universal
             # LLMContext with it
             context = OpenAILLMContext.from_messages(frame.messages)
-        elif isinstance(frame, VisionImageRawFrame):
-            # This is only useful in very simple pipelines because it creates
-            # a new context. Generally we want a context manager to catch
-            # UserImageRawFrames coming through the pipeline and add them
-            # to the context.
-            # TODO: support the newer universal LLMContext with a VisionImageRawFrame equivalent?
-            context = OpenAILLMContext()
-            context.add_image_frame_message(
-                format=frame.format, size=frame.size, image=frame.image, text=frame.text
-            )
         elif isinstance(frame, LLMUpdateSettingsFrame):
             await self._update_settings(frame.settings)
         else:

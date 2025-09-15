@@ -572,7 +572,7 @@ class SpeechmaticsSTTService(STTService):
             ]
             logger.debug(f"{self} interim transcript: {[f.text for f in frames]}")
 
-        # Send the DOWNSTREAM frames
+        # Send the frames
         for frame in frames:
             await self.push_frame(frame)
 
@@ -580,7 +580,7 @@ class SpeechmaticsSTTService(STTService):
         """Send VAD frame to the pipeline.
 
         This will emit a UserStartedSpeakingFrame or UserStoppedSpeakingFrame
-        depending on the value of `speaking`. It will also emit a InterruptionTaskFrame
+        depending on the value of `speaking`. It will also emit an interruption
         for the pipeline to handle interruption of the bot.
 
         Args:
@@ -590,30 +590,18 @@ class SpeechmaticsSTTService(STTService):
         if not self._enable_vad:
             return
 
-        # Frames to send
-        upstream_frames: list[Frame] = []
-        downstream_frames: list[Frame] = []
-
         # If VAD is enabled, then send a speaking frame
         if speaking:
             logger.debug(f"{self} user started speaking")
             self._is_speaking = True
-            upstream_frames += [InterruptionTaskFrame()]
-            downstream_frames += [UserStartedSpeakingFrame()]
+            await self.push_interruption_task_frame_and_wait()
+            await self.push_frame(UserStartedSpeakingFrame())
 
         # User has stopped speaking
         else:
             logger.debug(f"{self} user stopped speaking")
             self._is_speaking = False
-            downstream_frames += [UserStoppedSpeakingFrame()]
-
-        # Send UPSTREAM frames
-        for frame in upstream_frames:
-            await self.push_frame(frame, FrameDirection.UPSTREAM)
-
-        # Send the DOWNSTREAM frames
-        for frame in downstream_frames:
-            await self.push_frame(frame, FrameDirection.DOWNSTREAM)
+            await self.push_frame(UserStoppedSpeakingFrame())
 
     def can_generate_metrics(self) -> bool:
         """Check if this service can generate processing metrics.

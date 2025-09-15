@@ -61,9 +61,7 @@ try:
         VirtualCameraDevice,
         VirtualSpeakerDevice,
     )
-    from daily import (
-        LogLevel as DailyLogLevel,
-    )
+    from daily import LogLevel as DailyLogLevel
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
     logger.error(
@@ -1809,6 +1807,27 @@ class DailyOutputTransport(BaseOutputTransport):
         """
         await self._client.write_video_frame(frame)
 
+    def _supports_native_dtmf(self) -> bool:
+        """Daily supports native DTMF via telephone events.
+
+        Returns:
+            True, as Daily supports native DTMF transmission.
+        """
+        return True
+
+    async def _write_dtmf_native(self, frame):
+        """Use Daily's native send_dtmf method for telephone events.
+
+        Args:
+            frame: The DTMF frame to write.
+        """
+        await self._client.send_dtmf(
+            {
+                "sessionId": frame.transport_destination,
+                "tones": frame.button.value,
+            }
+        )
+
 
 class DailyTransport(BaseTransport):
     """Transport implementation for Daily audio and video calls.
@@ -2296,7 +2315,7 @@ class DailyTransport(BaseTransport):
         """Handle participant updated events."""
         await self._call_event_handler("on_participant_updated", participant)
 
-    async def _on_transcription_message(self, message):
+    async def _on_transcription_message(self, message: Dict[str, Any]) -> None:
         """Handle transcription message events."""
         await self._call_event_handler("on_transcription_message", message)
 
@@ -2308,9 +2327,10 @@ class DailyTransport(BaseTransport):
 
         text = message["text"]
         timestamp = message["timestamp"]
-        is_final = message["rawResponse"]["is_final"]
+        raw_response = message.get("rawResponse", {})
+        is_final = raw_response.get("is_final", False)
         try:
-            language = message["rawResponse"]["channel"]["alternatives"][0]["languages"][0]
+            language = raw_response["channel"]["alternatives"][0]["languages"][0]
             language = Language(language)
         except KeyError:
             language = None
