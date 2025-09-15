@@ -9,7 +9,7 @@
 import asyncio
 import os
 import time
-from typing import Any, AsyncGenerator
+from typing import Any, AsyncGenerator, Optional
 
 from dotenv import load_dotenv
 from loguru import logger
@@ -44,8 +44,6 @@ try:
         DiarizationSpeakerConfig,
         EndOfUtteranceMode,
         OperatingPoint,
-        SpeakerSegment,
-        SpeakerVADStatus,
         VoiceAgentClient,
         VoiceAgentConfig,
     )
@@ -104,8 +102,8 @@ class SpeechmaticsSTTService(STTService):
             end_of_utterance_mode: End of utterance delay mode. When ADAPTIVE is used, the delay
                 can be adjusted on the content of what the most recent speaker has said, such as
                 rate of speech and whether they have any pauses or disfluencies. When FIXED is used,
-                the delay is fixed to the value of `end_of_utterance_delay`. Use of NONE disables
-                end of utterance detection and uses a fallback timer.
+                the delay is fixed to the value of `end_of_utterance_delay`. Use of EXTERNAL disables
+                end of utterance detection and uses end_of_utterance_max_delay as a fallback timer.
                 Defaults to `EndOfUtteranceMode.FIXED`.
 
             additional_vocab: List of additional vocabulary entries. If you supply a list of
@@ -413,39 +411,45 @@ class SpeechmaticsSTTService(STTService):
         )
 
         # Interim segment event
-        @self._client.on(AgentServerMessageType.ADD_INTERIM_SEGMENTS)
+        @self._client.on(AgentServerMessageType.ADD_PARTIAL_SEGMENT)
         def _evt_on_interim_segment(message: dict[str, Any]):
-            segments: list[SpeakerSegment] = message["segments"]
-            asyncio.run_coroutine_threadsafe(self._send_frames(segments), self.get_event_loop())
+            segments: list[dict[str, Any]] = message.get("segments", [])
+            if segments:
+                asyncio.run_coroutine_threadsafe(self._send_frames(segments), self.get_event_loop())
 
         # Final segment event
-        @self._client.on(AgentServerMessageType.ADD_SEGMENTS)
+        @self._client.on(AgentServerMessageType.ADD_SEGMENT)
         def _evt_on_final_segment(message: dict[str, Any]):
-            segments: list[SpeakerSegment] = message["segments"]
-            asyncio.run_coroutine_threadsafe(
-                self._send_frames(segments, finalized=True), self.get_event_loop()
-            )
+            segments: list[dict[str, Any]] = message.get("segments", [])
+            if segments:
+                asyncio.run_coroutine_threadsafe(
+                    self._send_frames(segments, finalized=True), self.get_event_loop()
+                )
 
         # VAD events
         if self._enable_vad:
 
-            @self._client.on(AgentServerMessageType.SPEAKING_STARTED)
+            @self._client.on(AgentServerMessageType.SPEAKER_STARTED)
             def _evt_on_speech_started(message: dict[str, Any]):
-                status: SpeakerVADStatus = message["status"]
+                status: dict[str, Any] = message.get("status", {})
                 asyncio.run_coroutine_threadsafe(
-                    self._send_vad_frame(speaking=status.is_active),
+                    self._send_vad_frame(
+                        speaking=status.get("is_active", True), speaker_id=status.get("speaker_id")
+                    ),
                     self.get_event_loop(),
                 )
 
-            @self._client.on(AgentServerMessageType.SPEAKING_ENDED)
+            @self._client.on(AgentServerMessageType.SPEAKER_ENDED)
             def _evt_on_speech_ended(message: dict[str, Any]):
-                status: SpeakerVADStatus = message["status"]
+                status: dict[str, Any] = message.get("status", {})
                 asyncio.run_coroutine_threadsafe(
-                    self._send_vad_frame(speaking=status.is_active),
+                    self._send_vad_frame(
+                        speaking=status.get("is_active", True), speaker_id=status.get("speaker_id")
+                    ),
                     self.get_event_loop(),
                 )
 
-            @self._client.on(AgentServerMessageType.END_OF_UTTERANCE)
+            @self._client.on(AgentServerMessageType.END_OF_TURN)
             def _evt_on_turn_ended(message: dict[str, Any]):
                 logger.debug(message)
 
@@ -525,12 +529,14 @@ class SpeechmaticsSTTService(STTService):
                 focus_mode=params.focus_mode,
             ),
             known_speakers=params.known_speakers,
+            # Advanced
+            include_results=True,
             # Audio
             sample_rate=sample_rate,
             audio_encoding=params.audio_encoding,
         )
 
-    async def _send_frames(self, segments: list[SpeakerSegment], finalized: bool = False) -> None:
+    async def _send_frames(self, segments: list[dict[str, Any]], finalized: bool = False) -> None:
         """Send frames to the pipeline.
 
         Args:
@@ -545,24 +551,35 @@ class SpeechmaticsSTTService(STTService):
         frames: list[Frame] = []
 
         # Create frame from segment
-        def attr_from_segment(segment: SpeakerSegment) -> dict[str, Any]:
+        def attr_from_segment(segment: dict[str, Any]) -> dict[str, Any]:
+            # Formats the output text based on the speaker and defined formats from the config.
+            text = (
+                self._speaker_active_format
+                if segment.get("is_active", True)
+                else self._speaker_passive_format
+            ).format(
+                **{
+                    "speaker_id": segment.get("speaker_id", "UU"),
+                    "text": segment.get("text", ""),
+                    "ts": segment.get("timestamp"),
+                    "lang": segment.get("language"),
+                }
+            )
+
+            # Return the attributes for the frame
             return {
-                "text": segment.format_text(
-                    format=self._speaker_active_format
-                    if segment.is_active
-                    else self._speaker_passive_format
-                ),
-                "user_id": segment.speaker_id or "",
-                "timestamp": segment.timestamp,
-                "language": segment.language,
-                "result": [r.result for r in segment.fragments if r.result],
+                "text": text,
+                "user_id": segment.get("speaker_id") or "",
+                "timestamp": segment.get("timestamp"),
+                "language": segment.get("language"),
+                "result": segment.get("results", []),
             }
 
         # If final, then re-parse into TranscriptionFrame
         if finalized:
             frames += [TranscriptionFrame(**attr_from_segment(segment)) for segment in segments]
-            finalized_text = "|".join([s.format_text() for s in segments])
-            await self._trace_transcription(finalized_text, True, segments[0].language)
+            finalized_text = "|".join([s["text"] for s in segments])
+            await self._trace_transcription(finalized_text, True, segments[0]["language"])
             logger.debug(f"{self} finalized transcript: {[f.text for f in frames]}")
 
         # Return as interim results (unformatted)
@@ -576,7 +593,9 @@ class SpeechmaticsSTTService(STTService):
         for frame in frames:
             await self.push_frame(frame)
 
-    async def _send_vad_frame(self, speaking: bool = False) -> None:
+    async def _send_vad_frame(
+        self, speaking: bool = False, speaker_id: Optional[str] = None
+    ) -> None:
         """Send VAD frame to the pipeline.
 
         This will emit a UserStartedSpeakingFrame or UserStoppedSpeakingFrame
@@ -585,6 +604,7 @@ class SpeechmaticsSTTService(STTService):
 
         Args:
             speaking: Whether the user is speaking or not.
+            speaker_id: The speaker ID, if known.
         """
         # Skip if VAD not enabled
         if not self._enable_vad:
@@ -592,14 +612,14 @@ class SpeechmaticsSTTService(STTService):
 
         # If VAD is enabled, then send a speaking frame
         if speaking:
-            logger.debug(f"{self} user started speaking")
+            logger.debug(f"{self} user {speaker_id or 'UU'} started speaking")
             self._is_speaking = True
             await self.push_interruption_task_frame_and_wait()
             await self.push_frame(UserStartedSpeakingFrame())
 
         # User has stopped speaking
         else:
-            logger.debug(f"{self} user stopped speaking")
+            logger.debug(f"{self} user {speaker_id or 'UU'} stopped speaking")
             self._is_speaking = False
             await self.push_frame(UserStoppedSpeakingFrame())
 
