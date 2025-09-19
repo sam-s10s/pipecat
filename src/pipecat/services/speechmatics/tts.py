@@ -57,7 +57,7 @@ class SpeechmaticsTTSService(TTSService):
             api_key: Speechmatics API key for authentication. Uses environment variable
                 `SPEECHMATICS_API_KEY` if not provided.
             base_url: Base URL for Speechmatics TTS API. Defaults to
-                `https://preview.tts.speechmatics.com/generate`.
+                `https://preview.tts.speechmatics.com`.
             aiohttp_session: Shared aiohttp session for HTTP requests.
             sample_rate: Audio sample rate in Hz. Defaults to 16000.
             params: Optional[InputParams]: Input parameters for the service.
@@ -67,7 +67,7 @@ class SpeechmaticsTTSService(TTSService):
 
         # Service parameters
         self._api_key: str = api_key or os.getenv("SPEECHMATICS_API_KEY")
-        self._base_url: str = base_url or "https://preview.tts.speechmatics.com/generate"
+        self._base_url: str = base_url or "https://preview.tts.speechmatics.com"
         self._session = aiohttp_session
 
         # Check we have required attributes
@@ -111,15 +111,14 @@ class SpeechmaticsTTSService(TTSService):
 
         payload = {
             "text": text,
-            "voice": self._voice_id,
         }
+
+        url = f"{self._base_url}/generate/{self._voice_id}"
 
         try:
             await self.start_ttfb_metrics()
 
-            async with self._session.post(
-                self._base_url, json=payload, headers=headers
-            ) as response:
+            async with self._session.post(url, json=payload, headers=headers) as response:
                 if response.status != 200:
                     error_message = f"Speechmatics TTS error: HTTP {response.status}"
                     logger.error(error_message)
