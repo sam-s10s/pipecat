@@ -129,29 +129,56 @@ class SpeechmaticsTTSService(TTSService):
 
                 yield TTSStartedFrame()
 
+                # Process the response in streaming chunks
                 first_chunk = True
+                buffer = b""
+
+                # Helper to move all complete 2-byte int16 samples from buffer into a frame
+                def _emit_complete_samples():
+                    nonlocal buffer
+                    if len(buffer) < 2:
+                        return None
+                    complete_samples = len(buffer) // 2
+                    complete_bytes = complete_samples * 2
+
+                    duration_seconds = complete_samples / float(self.sample_rate)
+                    logger.debug(
+                        f"Processing {complete_bytes} bytes ({complete_samples} samples, {duration_seconds:.4f}s)"
+                    )
+
+                    audio_data = buffer[:complete_bytes]
+                    buffer = buffer[complete_bytes:]  # Keep remaining bytes for next iteration
+
+                    return TTSAudioRawFrame(
+                        audio=audio_data,
+                        sample_rate=self.sample_rate,
+                        num_channels=1,
+                    )
+
                 async for chunk in response.content.iter_any():
                     if not chunk:
                         continue
-
                     if first_chunk:
                         await self.stop_ttfb_metrics()
                         first_chunk = False
 
-                    # Calculate processing metrics for logging
-                    chunk_bytes = len(chunk)
-                    samples = chunk_bytes // 2  # 2 bytes per int16 sample
-                    duration_seconds = samples / float(self.sample_rate)
-                    logger.debug(
-                        f"Processing {chunk_bytes} bytes ({samples} samples, {duration_seconds:.4f}s)"
-                    )
+                    buffer += chunk
+                    logger.debug(f"Received chunk: {len(chunk)} bytes")
 
-                    # Directly yield the raw audio chunk without conversion
-                    yield TTSAudioRawFrame(
-                        audio=chunk,
-                        sample_rate=self.sample_rate,
-                        num_channels=1,
-                    )
+                    if len(chunk) % 2 != 0:
+                        logger.warning(
+                            f"Received chunk of {len(chunk)} bytes, not divisible by 2 (int16 sample size)"
+                        )
+
+                    # Emit a frame for all complete samples currently in buffer
+                    frame = _emit_complete_samples()
+                    if frame:
+                        yield frame
+
+                # Process any remaining bytes in buffer after streaming ends
+                frame = _emit_complete_samples()
+                if frame:
+                    yield frame
 
         except Exception as e:
             logger.exception(f"Error generating TTS: {e}")
