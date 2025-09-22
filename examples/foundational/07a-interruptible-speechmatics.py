@@ -75,7 +75,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
         params=SpeechmaticsSTTService.InputParams(
             language=Language.EN,
             enable_diarization=True,
-            end_of_utterance_silence_trigger=0.5,
+            end_of_utterance_silence_trigger=0.25,
             speaker_active_format="<{speaker_id}>{text}</{speaker_id}>",
         ),
     )

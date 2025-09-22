@@ -22,7 +22,6 @@ from pipecat.frames.frames import (
     ErrorFrame,
     Frame,
     InterimTranscriptionFrame,
-    InterruptionTaskFrame,
     StartFrame,
     TranscriptionFrame,
     UserStartedSpeakingFrame,
@@ -176,6 +175,9 @@ class SpeechmaticsSTTService(STTService):
                 Refer to our examples on the format of the known_speakers parameter.
                 Defaults to [].
 
+            enable_preview_features: Enable preview features using a preview endpoint provided by
+                Speechmatics. Defaults to False.
+
             audio_encoding: Audio encoding format. Defaults to AudioEncoding.PCM_S16LE.
         """
 
@@ -205,6 +207,9 @@ class SpeechmaticsSTTService(STTService):
         ignore_speakers: list[str] = []
         focus_mode: DiarizationFocusMode = DiarizationFocusMode.RETAIN
         known_speakers: list[DiarizationKnownSpeaker] = []
+
+        # Advanced features
+        enable_preview_features: bool = False
 
         # Audio
         audio_encoding: AudioEncoding = AudioEncoding.PCM_S16LE
@@ -269,8 +274,6 @@ class SpeechmaticsSTTService(STTService):
             base_url or os.getenv("SPEECHMATICS_RT_URL") or "wss://eu2.rt.speechmatics.com/v2"
         )
 
-        print(self._base_url)
-
         # Check we have required attributes
         if not self._api_key:
             raise ValueError("Missing Speechmatics API key")
@@ -286,7 +289,6 @@ class SpeechmaticsSTTService(STTService):
 
         # Framework options
         self._enable_vad: bool = params.enable_vad
-        self._end_of_utterance_silence_trigger: float = params.end_of_utterance_silence_trigger
         self._speaker_active_format: str = params.speaker_active_format
         self._speaker_passive_format: str = (
             params.speaker_passive_format or params.speaker_active_format
@@ -449,9 +451,10 @@ class SpeechmaticsSTTService(STTService):
                     self.get_event_loop(),
                 )
 
-            @self._client.on(AgentServerMessageType.END_OF_TURN)
-            def _evt_on_turn_ended(message: dict[str, Any]):
-                logger.debug(message)
+        # Log end of turn
+        @self._client.on(AgentServerMessageType.END_OF_TURN)
+        def _evt_on_turn_ended(message: dict[str, Any]):
+            logger.debug(message)
 
         # Speaker Result
         if self._config.enable_diarization:
@@ -504,6 +507,11 @@ class SpeechmaticsSTTService(STTService):
         if not params:
             return VoiceAgentConfig()
 
+        # Override defaults
+        if params.end_of_utterance_mode == EndOfUtteranceMode.EXTERNAL:
+            params.max_delay = 4.0
+            params.end_of_utterance_max_delay = 10.0
+
         # Create config
         return VoiceAgentConfig(
             # Service
@@ -531,6 +539,7 @@ class SpeechmaticsSTTService(STTService):
             known_speakers=params.known_speakers,
             # Advanced
             include_results=True,
+            enable_preview_features=params.enable_preview_features,
             # Audio
             sample_rate=sample_rate,
             audio_encoding=params.audio_encoding,
