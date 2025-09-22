@@ -113,7 +113,7 @@ class SpeechmaticsTTSService(TTSService):
             "text": text,
         }
 
-        url = f"{self._base_url}/generate/{self._voice_id}"
+        url = f"{self._base_url}/generate/{self._voice_id}?output_format=pcm_16000"
 
         try:
             await self.start_ttfb_metrics()
