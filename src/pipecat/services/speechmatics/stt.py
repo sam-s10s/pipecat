@@ -17,6 +17,8 @@ from pydantic import BaseModel
 
 from pipecat import __version__ as pipecat_version
 from pipecat.frames.frames import (
+    BotStartedSpeakingFrame,
+    BotStoppedSpeakingFrame,
     CancelFrame,
     EndFrame,
     ErrorFrame,
@@ -287,6 +289,9 @@ class SpeechmaticsSTTService(STTService):
         self._client: VoiceAgentClient | None = None
         self._config: VoiceAgentConfig = self._prepare_config(sample_rate, params)
 
+        # Outbound frame queue
+        self._outbound_frames: asyncio.Queue[Frame] = asyncio.Queue()
+
         # Framework options
         self._enable_vad: bool = params.enable_vad
         self._speaker_active_format: str = params.speaker_active_format
@@ -299,6 +304,7 @@ class SpeechmaticsSTTService(STTService):
 
         # Speaking states
         self._is_speaking: bool = False
+        self._bot_speaking: bool = False
 
         # Event handlers
         if params.enable_diarization:
@@ -328,6 +334,12 @@ class SpeechmaticsSTTService(STTService):
         """
         # Forward to parent
         await super().process_frame(frame, direction)
+
+        # Track the bot
+        if isinstance(frame, BotStartedSpeakingFrame):
+            self._bot_speaking = True
+        elif isinstance(frame, BotStoppedSpeakingFrame):
+            self._bot_speaking = False
 
         # Force finalization
         if isinstance(frame, UserStoppedSpeakingFrame):
@@ -623,7 +635,8 @@ class SpeechmaticsSTTService(STTService):
         if speaking:
             logger.debug(f"{self} user {speaker_id or 'UU'} started speaking")
             self._is_speaking = True
-            await self.push_interruption_task_frame_and_wait()
+            if self._bot_speaking:
+                await self.push_interruption_task_frame_and_wait()
             await self.push_frame(UserStartedSpeakingFrame())
 
         # User has stopped speaking
