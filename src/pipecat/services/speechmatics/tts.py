@@ -57,7 +57,7 @@ class SpeechmaticsTTSService(TTSService):
             api_key: Speechmatics API key for authentication. Uses environment variable
                 `SPEECHMATICS_API_KEY` if not provided.
             base_url: Base URL for Speechmatics TTS API. Defaults to
-                `https://preview.tts.speechmatics.com/generate`.
+                `https://preview.tts.speechmatics.com`.
             aiohttp_session: Shared aiohttp session for HTTP requests.
             sample_rate: Audio sample rate in Hz. Defaults to 16000.
             params: Optional[InputParams]: Input parameters for the service.
@@ -67,7 +67,7 @@ class SpeechmaticsTTSService(TTSService):
 
         # Service parameters
         self._api_key: str = api_key or os.getenv("SPEECHMATICS_API_KEY")
-        self._base_url: str = base_url or "https://preview.tts.speechmatics.com/generate"
+        self._base_url: str = base_url or "https://preview.tts.speechmatics.com"
         self._session = aiohttp_session
 
         # Check we have required attributes
@@ -111,15 +111,14 @@ class SpeechmaticsTTSService(TTSService):
 
         payload = {
             "text": text,
-            "voice": self._voice_id,
         }
+
+        url = f"{self._base_url}/generate/{self._voice_id}?output_format=pcm_16000"
 
         try:
             await self.start_ttfb_metrics()
 
-            async with self._session.post(
-                self._base_url, json=payload, headers=headers
-            ) as response:
+            async with self._session.post(url, json=payload, headers=headers) as response:
                 if response.status != 200:
                     error_message = f"Speechmatics TTS error: HTTP {response.status}"
                     logger.error(error_message)
@@ -134,26 +133,24 @@ class SpeechmaticsTTSService(TTSService):
                 first_chunk = True
                 buffer = b""
 
-                # Helper to convert all complete 4-byte float samples from buffer into one frame
+                # Helper to move all complete 2-byte int16 samples from buffer into a frame
                 def _emit_complete_samples():
                     nonlocal buffer
-                    if len(buffer) < 4:
+                    if len(buffer) < 2:
                         return None
-                    complete_samples = len(buffer) // 4
-                    complete_bytes = complete_samples * 4
-                    # Log what we're about to process
+                    complete_samples = len(buffer) // 2
+                    complete_bytes = complete_samples * 2
+
                     duration_seconds = complete_samples / float(self.sample_rate)
                     logger.debug(
                         f"Processing {complete_bytes} bytes ({complete_samples} samples, {duration_seconds:.4f}s)"
                     )
-                    # Convert raw bytes to numpy array of 32-bit floats (little-endian)
-                    float_samples = np.frombuffer(buffer[:complete_bytes], dtype="<f4")
-                    # Convert float samples (-1.0 to 1.0) to 16-bit integers
-                    int16_samples = (float_samples * 32767).astype(np.int16)
-                    # Keep remaining bytes for next iteration
-                    buffer = buffer[complete_bytes:]
+
+                    audio_data = buffer[:complete_bytes]
+                    buffer = buffer[complete_bytes:]  # Keep remaining bytes for next iteration
+
                     return TTSAudioRawFrame(
-                        audio=int16_samples.tobytes(),
+                        audio=audio_data,
                         sample_rate=self.sample_rate,
                         num_channels=1,
                     )
@@ -161,7 +158,6 @@ class SpeechmaticsTTSService(TTSService):
                 async for chunk in response.content.iter_any():
                     if not chunk:
                         continue
-
                     if first_chunk:
                         await self.stop_ttfb_metrics()
                         first_chunk = False
@@ -169,10 +165,9 @@ class SpeechmaticsTTSService(TTSService):
                     buffer += chunk
                     logger.debug(f"Received chunk: {len(chunk)} bytes")
 
-                    # Warn if chunk size is not divisible by 4 bytes (float32 sample size)
-                    if len(chunk) % 4 != 0:
+                    if len(chunk) % 2 != 0:
                         logger.warning(
-                            f"Received chunk of {len(chunk)} bytes, not divisible by 4 (float32 sample size)"
+                            f"Received chunk of {len(chunk)} bytes, not divisible by 2 (int16 sample size)"
                         )
 
                     # Emit a frame for all complete samples currently in buffer
