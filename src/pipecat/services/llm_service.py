@@ -14,7 +14,6 @@ from typing import (
     Awaitable,
     Callable,
     Dict,
-    List,
     Mapping,
     Optional,
     Protocol,
@@ -37,11 +36,15 @@ from pipecat.frames.frames import (
     FunctionCallResultFrame,
     FunctionCallResultProperties,
     FunctionCallsStartedFrame,
+    InterruptionFrame,
+    LLMConfigureOutputFrame,
+    LLMFullResponseEndFrame,
+    LLMFullResponseStartFrame,
+    LLMTextFrame,
     StartFrame,
-    StartInterruptionFrame,
     UserImageRequestFrame,
 )
-from pipecat.processors.aggregators.llm_context import LLMContext
+from pipecat.processors.aggregators.llm_context import LLMContext, LLMSpecificMessage
 from pipecat.processors.aggregators.llm_response import (
     LLMAssistantAggregatorParams,
     LLMUserAggregatorParams,
@@ -179,6 +182,7 @@ class LLMService(AIService):
         self._function_call_tasks: Dict[asyncio.Task, FunctionCallRunnerItem] = {}
         self._sequential_runner_task: Optional[asyncio.Task] = None
         self._tracing_enabled: bool = False
+        self._skip_tts: bool = False
 
         self._register_event_handler("on_function_calls_started")
         self._register_event_handler("on_completion_timeout")
@@ -191,18 +195,24 @@ class LLMService(AIService):
         """
         return self._adapter
 
-    async def run_inference(
-        self, context: LLMContext | OpenAILLMContext, system_instruction: Optional[str] = None
-    ) -> Optional[str]:
+    def create_llm_specific_message(self, message: Any) -> LLMSpecificMessage:
+        """Create an LLM-specific message (as opposed to a standard message) for use in an LLMContext.
+
+        Args:
+            message: The message content.
+
+        Returns:
+            A LLMSpecificMessage instance.
+        """
+        return self.get_llm_adapter().create_llm_specific_message(message)
+
+    async def run_inference(self, context: LLMContext | OpenAILLMContext) -> Optional[str]:
         """Run a one-shot, out-of-band (i.e. out-of-pipeline) inference with the given LLM context.
 
         Must be implemented by subclasses.
 
         Args:
             context: The LLM context containing conversation history.
-            system_instruction: Optional system instruction to guide the LLM's
-              behavior. You could also (again, optionally) provide a system
-              instruction directly in the context.
 
         Returns:
             The LLM's response as a string, or None if no response is generated.
@@ -270,10 +280,24 @@ class LLMService(AIService):
         """
         await super().process_frame(frame, direction)
 
-        if isinstance(frame, StartInterruptionFrame):
+        if isinstance(frame, InterruptionFrame):
             await self._handle_interruptions(frame)
+        elif isinstance(frame, LLMConfigureOutputFrame):
+            self._skip_tts = frame.skip_tts
 
-    async def _handle_interruptions(self, _: StartInterruptionFrame):
+    async def push_frame(self, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM):
+        """Pushes a frame.
+
+        Args:
+            frame: The frame to push.
+            direction: The direction of frame pushing.
+        """
+        if isinstance(frame, (LLMTextFrame, LLMFullResponseStartFrame, LLMFullResponseEndFrame)):
+            frame.skip_tts = self._skip_tts
+
+        await super().push_frame(frame, direction)
+
+    async def _handle_interruptions(self, _: InterruptionFrame):
         for function_name, entry in self._functions.items():
             if entry.cancel_on_interruption:
                 await self._cancel_function_call(function_name)

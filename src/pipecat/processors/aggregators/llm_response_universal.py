@@ -13,7 +13,6 @@ LLM processing, and text-to-speech components in conversational AI pipelines.
 
 import asyncio
 import json
-from dataclasses import dataclass
 from typing import Any, Dict, List, Literal, Optional, Set
 
 from loguru import logger
@@ -23,7 +22,6 @@ from pipecat.audio.interruptions.base_interruption_strategy import BaseInterrupt
 from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
 from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.frames.frames import (
-    BotInterruptionFrame,
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     CancelFrame,
@@ -37,17 +35,18 @@ from pipecat.frames.frames import (
     FunctionCallsStartedFrame,
     InputAudioRawFrame,
     InterimTranscriptionFrame,
+    InterruptionFrame,
     LLMContextAssistantTimestampFrame,
     LLMContextFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
     LLMMessagesAppendFrame,
     LLMMessagesUpdateFrame,
+    LLMRunFrame,
     LLMSetToolChoiceFrame,
     LLMSetToolsFrame,
     SpeechControlParamsFrame,
     StartFrame,
-    StartInterruptionFrame,
     TextFrame,
     TranscriptionFrame,
     UserImageRawFrame,
@@ -117,7 +116,7 @@ class LLMContextAggregator(FrameProcessor):
         """
         return self._context
 
-    def get_context_frame(self) -> LLMContextFrame:
+    def _get_context_frame(self) -> LLMContextFrame:
         """Create a context frame with the current context.
 
         Returns:
@@ -131,7 +130,7 @@ class LLMContextAggregator(FrameProcessor):
         Args:
             direction: The direction to push the frame (upstream or downstream).
         """
-        frame = self.get_context_frame()
+        frame = self._get_context_frame()
         await self.push_frame(frame, direction)
 
     def add_messages(self, messages):
@@ -277,6 +276,8 @@ class LLMUserAggregator(LLMContextAggregator):
             await self._handle_transcription(frame)
         elif isinstance(frame, InterimTranscriptionFrame):
             await self._handle_interim_transcription(frame)
+        elif isinstance(frame, LLMRunFrame):
+            await self._handle_llm_run(frame)
         elif isinstance(frame, LLMMessagesAppendFrame):
             await self._handle_llm_messages_append(frame)
         elif isinstance(frame, LLMMessagesUpdateFrame):
@@ -308,9 +309,9 @@ class LLMUserAggregator(LLMContextAggregator):
 
                 if should_interrupt:
                     logger.debug(
-                        "Interruption conditions met - pushing BotInterruptionFrame and aggregation"
+                        "Interruption conditions met - pushing interruption and aggregation"
                     )
-                    await self.push_frame(BotInterruptionFrame(), FrameDirection.UPSTREAM)
+                    await self.push_interruption_task_frame_and_wait()
                     await self._process_aggregation()
                 else:
                     logger.debug("Interruption conditions not met - not pushing aggregation")
@@ -355,6 +356,9 @@ class LLMUserAggregator(LLMContextAggregator):
 
     async def _cancel(self, frame: CancelFrame):
         await self._cancel_aggregation_task()
+
+    async def _handle_llm_run(self, frame: LLMRunFrame):
+        await self.push_context_frame()
 
     async def _handle_llm_messages_append(self, frame: LLMMessagesAppendFrame):
         self.add_messages(frame.messages)
@@ -573,7 +577,7 @@ class LLMAssistantAggregator(LLMContextAggregator):
         """
         await super().process_frame(frame, direction)
 
-        if isinstance(frame, StartInterruptionFrame):
+        if isinstance(frame, InterruptionFrame):
             await self._handle_interruptions(frame)
             await self.push_frame(frame, direction)
         elif isinstance(frame, LLMFullResponseStartFrame):
@@ -582,6 +586,8 @@ class LLMAssistantAggregator(LLMContextAggregator):
             await self._handle_llm_end(frame)
         elif isinstance(frame, TextFrame):
             await self._handle_text(frame)
+        elif isinstance(frame, LLMRunFrame):
+            await self._handle_llm_run(frame)
         elif isinstance(frame, LLMMessagesAppendFrame):
             await self._handle_llm_messages_append(frame)
         elif isinstance(frame, LLMMessagesUpdateFrame):
@@ -624,6 +630,9 @@ class LLMAssistantAggregator(LLMContextAggregator):
         timestamp_frame = LLMContextAssistantTimestampFrame(timestamp=time_now_iso8601())
         await self.push_frame(timestamp_frame)
 
+    async def _handle_llm_run(self, frame: LLMRunFrame):
+        await self.push_context_frame(FrameDirection.UPSTREAM)
+
     async def _handle_llm_messages_append(self, frame: LLMMessagesAppendFrame):
         self.add_messages(frame.messages)
         if frame.run_llm:
@@ -634,7 +643,7 @@ class LLMAssistantAggregator(LLMContextAggregator):
         if frame.run_llm:
             await self.push_context_frame(FrameDirection.UPSTREAM)
 
-    async def _handle_interruptions(self, frame: StartInterruptionFrame):
+    async def _handle_interruptions(self, frame: InterruptionFrame):
         await self._push_aggregation()
         self._started = 0
         await self.reset()

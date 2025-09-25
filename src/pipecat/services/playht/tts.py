@@ -14,7 +14,6 @@ import io
 import json
 import struct
 import uuid
-import warnings
 from typing import AsyncGenerator, Optional
 
 import aiohttp
@@ -26,8 +25,8 @@ from pipecat.frames.frames import (
     EndFrame,
     ErrorFrame,
     Frame,
+    InterruptionFrame,
     StartFrame,
-    StartInterruptionFrame,
     TTSAudioRawFrame,
     TTSStartedFrame,
     TTSStoppedFrame,
@@ -313,7 +312,7 @@ class PlayHTTTSService(InterruptibleTTSService):
             return self._websocket
         raise Exception("Websocket not connected")
 
-    async def _handle_interruption(self, frame: StartInterruptionFrame, direction: FrameDirection):
+    async def _handle_interruption(self, frame: InterruptionFrame, direction: FrameDirection):
         """Handle interruption by stopping metrics and clearing request ID."""
         await super()._handle_interruption(frame, direction)
         await self.stop_all_metrics()
@@ -455,11 +454,15 @@ class PlayHTHttpTTSService(TTSService):
 
         # Warn about deprecated protocol parameter if explicitly provided
         if protocol:
-            warnings.warn(
-                "The 'protocol' parameter is deprecated and will be removed in a future version.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
+            import warnings
+
+            with warnings.catch_warnings():
+                warnings.simplefilter("always")
+                warnings.warn(
+                    "The 'protocol' parameter is deprecated and will be removed in a future version.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
 
         params = params or PlayHTHttpTTSService.InputParams()
 

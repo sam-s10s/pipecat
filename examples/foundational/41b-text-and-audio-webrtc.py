@@ -12,11 +12,13 @@ from loguru import logger
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.frames.frames import (
     LLMMessagesAppendFrame,
+    LLMRunFrame,
 )
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
-from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
+from pipecat.processors.aggregators.llm_context import LLMContext
+from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
 from pipecat.processors.frameworks.rtvi import (
     ActionResult,
     RTVIAction,
@@ -30,8 +32,7 @@ from pipecat.runner.types import RunnerArguments
 from pipecat.runner.utils import create_transport
 from pipecat.services.cartesia.tts import CartesiaTTSService
 from pipecat.services.deepgram.stt import DeepgramSTTService
-from pipecat.services.openai import OpenAIContextAggregatorPair
-from pipecat.services.openai.llm import OpenAILLMService
+from pipecat.services.openai.llm import OpenAIContextAggregatorPair, OpenAILLMService
 from pipecat.transports.base_transport import BaseTransport, TransportParams
 
 load_dotenv(override=True)
@@ -58,7 +59,7 @@ def create_action_llm_append_to_messages(context_aggregator: OpenAIContextAggreg
                 await rtvi.push_frame(frame)
 
         if run_immediately:
-            frame = context_aggregator.user().get_context_frame()
+            frame = LLMRunFrame()
             await rtvi.push_frame(frame)
 
         return True
@@ -106,8 +107,8 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
         },
     ]
 
-    context = OpenAILLMContext(messages)
-    context_aggregator = llm.create_context_aggregator(context)
+    context = LLMContext(messages)
+    context_aggregator = LLMContextAggregatorPair(context)
 
     action_llm_append_to_messages = create_action_llm_append_to_messages(context_aggregator)
     rtvi = RTVIProcessor(config=RTVIConfig(config=[]))
@@ -155,7 +156,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     async def on_client_connected(transport, client):
         logger.info(f"Client connected: {client}")
         # Kick off the conversation.
-        await task.queue_frames([context_aggregator.user().get_context_frame()])
+        await task.queue_frames([LLMRunFrame()])
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):

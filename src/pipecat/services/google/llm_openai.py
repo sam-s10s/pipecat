@@ -65,23 +65,16 @@ class GoogleLLMOpenAIBetaService(OpenAILLMService):
         """
         import warnings
 
-        warnings.warn(
-            "GoogleLLMOpenAIBetaService is deprecated and will be removed in a future version. "
-            "Use GoogleLLMService instead for better integration with Google's native API.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("always")
+            warnings.warn(
+                "GoogleLLMOpenAIBetaService is deprecated and will be removed in a future version. "
+                "Use GoogleLLMService instead for better integration with Google's native API.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
 
         super().__init__(api_key=api_key, base_url=base_url, model=model, **kwargs)
-
-    @property
-    def supports_universal_context(self) -> bool:
-        """Check if this service supports universal LLMContext.
-
-        Returns:
-            False, as GoogleLLMOpenAIBetaService does not yet support universal LLMContext.
-        """
-        return False
 
     async def _process_context(self, context: OpenAILLMContext):
         functions_list = []

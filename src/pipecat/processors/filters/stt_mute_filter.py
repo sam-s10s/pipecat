@@ -25,9 +25,8 @@ from pipecat.frames.frames import (
     FunctionCallResultFrame,
     InputAudioRawFrame,
     InterimTranscriptionFrame,
+    InterruptionFrame,
     StartFrame,
-    StartInterruptionFrame,
-    StopInterruptionFrame,
     STTMuteFrame,
     TranscriptionFrame,
     UserStartedSpeakingFrame,
@@ -205,8 +204,7 @@ class STTMuteFilter(FrameProcessor):
         if isinstance(
             frame,
             (
-                StartInterruptionFrame,
-                StopInterruptionFrame,
+                InterruptionFrame,
                 VADUserStartedSpeakingFrame,
                 VADUserStoppedSpeakingFrame,
                 UserStartedSpeakingFrame,
