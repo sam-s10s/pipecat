@@ -10,9 +10,10 @@ import unittest
 from pipecat.frames.frames import (
     EndFrame,
     Frame,
+    InterruptionCompletedFrame,
     InterruptionFrame,
+    OutputTransportMessageUrgentFrame,
     TextFrame,
-    TransportMessageUrgentFrame,
 )
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.processors.filters.identity_filter import IdentityFilter
@@ -81,7 +82,7 @@ class TestFrameProcessor(unittest.IsolatedAsyncioTestCase):
 
                 if isinstance(frame, TextFrame):
                     await self.push_interruption_task_frame_and_wait()
-                    await self.push_frame(TransportMessageUrgentFrame(message=frame.text))
+                    await self.push_frame(OutputTransportMessageUrgentFrame(message=frame.text))
                 else:
                     await self.push_frame(frame, direction)
 
@@ -101,7 +102,8 @@ class TestFrameProcessor(unittest.IsolatedAsyncioTestCase):
         expected_down_frames = [
             InterruptionFrame,
             InterruptionFrame,
-            TransportMessageUrgentFrame,
+            InterruptionCompletedFrame,
+            OutputTransportMessageUrgentFrame,
             EndFrame,
         ]
         await run_test(

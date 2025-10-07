@@ -672,7 +672,7 @@ class TTSSpeakFrame(DataFrame):
 
 
 @dataclass
-class TransportMessageFrame(DataFrame):
+class OutputTransportMessageFrame(DataFrame):
     """Frame containing transport-specific message data.
 
     Parameters:
@@ -683,6 +683,32 @@ class TransportMessageFrame(DataFrame):
 
     def __str__(self):
         return f"{self.name}(message: {self.message})"
+
+
+@dataclass
+class TransportMessageFrame(OutputTransportMessageFrame):
+    """Frame containing transport-specific message data.
+
+    .. deprecated:: 0.0.87
+        This frame is deprecated and will be removed in a future version.
+        Instead, use `OutputTransportMessageFrame`.
+
+    Parameters:
+        message: The transport message payload.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("always")
+            warnings.warn(
+                "TransportMessageFrame is deprecated and will be removed in a future version. "
+                "Instead, use OutputTransportMessageFrame.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
 
 
 @dataclass
@@ -823,13 +849,15 @@ class FrameProcessorResumeUrgentFrame(SystemFrame):
 class InterruptionFrame(SystemFrame):
     """Frame indicating user started speaking (interruption detected).
 
-    Emitted by the BaseInputTransport to indicate that a user has started
-    speaking (i.e. is interrupting). This is similar to
-    UserStartedSpeakingFrame except that it should be pushed concurrently
-    with other frames (so the order is not guaranteed).
+    Usually emitted by the pipeline task to indicate that all frame processors
+    should be interrrupted.
+
+    Parameters:
+        pushed_by_task: Whether this interruption was pushed from the pipeline
+        task.
     """
 
-    pass
+    pushed_by_task: bool = False
 
 
 @dataclass
@@ -858,6 +886,17 @@ class StartInterruptionFrame(InterruptionFrame):
                 DeprecationWarning,
                 stacklevel=2,
             )
+
+
+@dataclass
+class InterruptionCompletedFrame(SystemFrame):
+    """Frame indicating that the whole pipeline has been interrupted.
+
+    This is emitted by the pipeline task when an InterruptionFrame has made it
+    all the way to the end of pipeline, interrupting all the frame processors.
+    """
+
+    pass
 
 
 @dataclass
@@ -1092,8 +1131,8 @@ class STTMuteFrame(SystemFrame):
 
 
 @dataclass
-class TransportMessageUrgentFrame(SystemFrame):
-    """Frame for urgent transport messages that need immediate processing.
+class InputTransportMessageFrame(SystemFrame):
+    """Frame for transport messages received from external sources.
 
     Parameters:
         message: The urgent transport message payload.
@@ -1106,20 +1145,69 @@ class TransportMessageUrgentFrame(SystemFrame):
 
 
 @dataclass
-class InputTransportMessageUrgentFrame(TransportMessageUrgentFrame):
+class InputTransportMessageUrgentFrame(InputTransportMessageFrame):
     """Frame for transport messages received from external sources.
 
-    This frame wraps incoming transport messages to distinguish them from outgoing
-    urgent transport messages (TransportMessageUrgentFrame), preventing infinite
-    message loops in the transport layer. It inherits the message payload from
-    TransportMessageFrame while marking the message as having been received
-    rather than generated locally.
+    .. deprecated:: 0.0.87
+        This frame is deprecated and will be removed in a future version.
+        Instead, use `InputTransportMessageFrame`.
 
-    Used by transport implementations to properly handle bidirectional message
-    flow without creating feedback loops.
+    Parameters:
+        message: The urgent transport message payload.
     """
 
-    pass
+    def __post_init__(self):
+        super().__post_init__()
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("always")
+            warnings.warn(
+                "InputTransportMessageUrgentFrame is deprecated and will be removed in a future version. "
+                "Instead, use InputTransportMessageFrame.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+
+
+@dataclass
+class OutputTransportMessageUrgentFrame(SystemFrame):
+    """Frame for urgent transport messages that need to be sent immediately.
+
+    Parameters:
+        message: The urgent transport message payload.
+    """
+
+    message: Any
+
+    def __str__(self):
+        return f"{self.name}(message: {self.message})"
+
+
+@dataclass
+class TransportMessageUrgentFrame(OutputTransportMessageUrgentFrame):
+    """Frame for urgent transport messages that need to be sent immediately.
+
+    .. deprecated:: 0.0.87
+        This frame is deprecated and will be removed in a future version.
+        Instead, use `OutputTransportMessageUrgentFrame`.
+
+    Parameters:
+        message: The urgent transport message payload.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("always")
+            warnings.warn(
+                "TransportMessageUrgentFrame is deprecated and will be removed in a future version. "
+                "Instead, use OutputTransportMessageFrame.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
 
 
 @dataclass

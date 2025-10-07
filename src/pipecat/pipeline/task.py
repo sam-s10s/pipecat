@@ -13,8 +13,7 @@ including heartbeats, idle detection, and observer integration.
 
 import asyncio
 import time
-from collections import deque
-from typing import Any, AsyncIterable, Deque, Dict, Iterable, List, Optional, Tuple, Type
+from typing import Any, AsyncIterable, Dict, Iterable, List, Optional, Tuple, Type
 
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field
@@ -31,7 +30,7 @@ from pipecat.frames.frames import (
     ErrorFrame,
     Frame,
     HeartbeatFrame,
-    InputAudioRawFrame,
+    InterruptionCompletedFrame,
     InterruptionFrame,
     InterruptionTaskFrame,
     MetricsFrame,
@@ -132,9 +131,11 @@ class PipelineTask(BasePipelineTask):
 
     - on_pipeline_finished: Called after the pipeline has reached any terminal state.
           This includes:
+
               - StopFrame: pipeline was stopped (processors keep connections open)
               - EndFrame: pipeline ended normally
               - CancelFrame: pipeline was cancelled
+
           Use this event for cleanup, logging, or post-processing tasks. Users can inspect
           the frame if they need to handle specific cases.
 
@@ -395,7 +396,8 @@ class PipelineTask(BasePipelineTask):
         Cancels all running tasks and stops frame processing without
         waiting for completion.
         """
-        await self._cancel()
+        if not self._finished:
+            await self._cancel()
 
     async def run(self, params: PipelineTaskParams):
         """Start and manage the pipeline execution until completion or cancellation.
@@ -690,8 +692,11 @@ class PipelineTask(BasePipelineTask):
             # bypassing the push queue and directly queue into the
             # pipeline. This is in case the push task is blocked waiting for a
             # pipeline-ending frame to finish traversing the pipeline.
-            logger.debug(f"{self}: received interruption task frame {frame}")
-            await self._pipeline.queue_frame(InterruptionFrame())
+            interruption_frame = InterruptionFrame(pushed_by_task=True)
+            logger.debug(
+                f"{self}: received interruption task frame {frame}, pushing {interruption_frame}"
+            )
+            await self._pipeline.queue_frame(interruption_frame)
         elif isinstance(frame, ErrorFrame):
             if frame.fatal:
                 logger.error(f"A fatal error occurred: {frame}")
@@ -735,6 +740,14 @@ class PipelineTask(BasePipelineTask):
             self._pipeline_end_event.set()
         elif isinstance(frame, CancelFrame):
             self._pipeline_end_event.set()
+        elif isinstance(frame, InterruptionFrame) and frame.pushed_by_task:
+            # If an interruption frame made it all the way to the end of the
+            # pipeline, send an InterruptionCompleteFrame. Note that we are
+            # bypassing the push queue and directly queue into the
+            # pipeline. This is in case the push task is blocked waiting for a
+            # pipeline-ending frame to finish traversing the pipeline.
+            logger.debug(f"{self}: interruption completed with {frame}")
+            await self._pipeline.queue_frame(InterruptionCompletedFrame())
         elif isinstance(frame, HeartbeatFrame):
             await self._heartbeat_queue.put(frame)
 

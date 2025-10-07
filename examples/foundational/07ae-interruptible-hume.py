@@ -4,7 +4,6 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-
 import os
 
 from dotenv import load_dotenv
@@ -23,14 +22,10 @@ from pipecat.processors.aggregators.llm_response_universal import LLMContextAggr
 from pipecat.runner.types import RunnerArguments
 from pipecat.runner.utils import create_transport
 from pipecat.services.deepgram.stt import DeepgramSTTService
-from pipecat.services.deepgram.tts import DeepgramTTSService
+from pipecat.services.hume.tts import HUME_SAMPLE_RATE, HumeTTSService
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.transports.base_transport import BaseTransport, TransportParams
-from pipecat.transports.daily.transport import (
-    DailyOutputTransportMessageFrame,
-    DailyOutputTransportMessageUrgentFrame,
-    DailyParams,
-)
+from pipecat.transports.daily.transport import DailyParams
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams
 
 load_dotenv(override=True)
@@ -65,19 +60,13 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
 
     stt = DeepgramSTTService(api_key=os.getenv("DEEPGRAM_API_KEY"))
 
-    tts = DeepgramTTSService(
-        api_key=os.getenv("DEEPGRAM_API_KEY"),
-        voice="aura-asteria-en",
-        base_url="http://0.0.0.0:8080",
+    tts = HumeTTSService(
+        api_key=os.getenv("HUME_API_KEY"),
+        # Replace with your Hume voice ID
+        voice_id="f898a92e-685f-43fa-985b-a46920f0650b",
     )
 
-    llm = OpenAILLMService(
-        # To use OpenAI
-        # api_key=os.getenv("OPENAI_API_KEY"),
-        # Or, to use a local vLLM (or similar) api server
-        model="meta-llama/Meta-Llama-3-8B-Instruct",
-        base_url="http://0.0.0.0:8000/v1",
-    )
+    llm = OpenAILLMService(api_key=os.getenv("OPENAI_API_KEY"))
 
     messages = [
         {
@@ -92,12 +81,12 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     pipeline = Pipeline(
         [
             transport.input(),  # Transport user input
-            stt,  # STT
-            context_aggregator.user(),
+            stt,
+            context_aggregator.user(),  # User responses
             llm,  # LLM
             tts,  # TTS
             transport.output(),  # Transport bot output
-            context_aggregator.assistant(),
+            context_aggregator.assistant(),  # Assistant spoken responses
         ]
     )
 
@@ -106,46 +95,17 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
         params=PipelineParams(
             enable_metrics=True,
             enable_usage_metrics=True,
+            audio_out_sample_rate=HUME_SAMPLE_RATE,
         ),
         idle_timeout_secs=runner_args.pipeline_idle_timeout_secs,
     )
 
-    # When the first participant joins, the bot should introduce itself.
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
         logger.info(f"Client connected")
         # Kick off the conversation.
         messages.append({"role": "system", "content": "Please introduce yourself to the user."})
         await task.queue_frames([LLMRunFrame()])
-
-    # Handle "latency-ping" messages. The client will send app messages that look like
-    # this:
-    #   { "latency-ping": { ts: <client-side timestamp> }}
-    #
-    # We want to send an immediate pong back to the client from this handler function.
-    # Also, we will push a frame into the top of the pipeline and send it after the
-    #
-    @transport.event_handler("on_app_message")
-    async def on_app_message(transport, message, sender):
-        try:
-            if "latency-ping" in message:
-                logger.debug(f"Received latency ping app message: {message}")
-                ts = message["latency-ping"]["ts"]
-                # Send immediately
-                await task.queue_frame(
-                    DailyOutputTransportMessageUrgentFrame(
-                        message={"latency-pong-msg-handler": {"ts": ts}}, participant_id=sender
-                    )
-                )
-                # And push to the pipeline for the Daily transport.output to send
-                await task.queue_frame(
-                    DailyOutputTransportMessageFrame(
-                        message={"latency-pong-pipeline-delivery": {"ts": ts}},
-                        participant_id=sender,
-                    )
-                )
-        except Exception as e:
-            logger.debug(f"message handling error: {e} - {message}")
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):

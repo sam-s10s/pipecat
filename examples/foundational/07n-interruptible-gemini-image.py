@@ -4,6 +4,21 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
+"""
+A conversational AI bot using Gemini for both LLM, STT and TTS.
+
+This example demonstrates how to use Gemini's image generation capabilities.
+
+Features showcased:
+- Gemini LLM for conversation and image generation
+- Google TTS and STT
+
+Run with:
+    python examples/foundational/07n-interruptible-gemini-image.py
+
+Make sure to set your environment variables:
+    export GOOGLE_API_KEY=your_api_key_here
+"""
 
 import os
 
@@ -22,15 +37,12 @@ from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
 from pipecat.runner.types import RunnerArguments
 from pipecat.runner.utils import create_transport
-from pipecat.services.deepgram.stt import DeepgramSTTService
-from pipecat.services.deepgram.tts import DeepgramTTSService
-from pipecat.services.openai.llm import OpenAILLMService
+from pipecat.services.google.llm import GoogleLLMService
+from pipecat.services.google.stt import GoogleSTTService
+from pipecat.services.google.tts import GoogleTTSService
+from pipecat.transcriptions.language import Language
 from pipecat.transports.base_transport import BaseTransport, TransportParams
-from pipecat.transports.daily.transport import (
-    DailyOutputTransportMessageFrame,
-    DailyOutputTransportMessageUrgentFrame,
-    DailyParams,
-)
+from pipecat.transports.daily.transport import DailyParams
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams
 
 load_dotenv(override=True)
@@ -42,18 +54,18 @@ transport_params = {
     "daily": lambda: DailyParams(
         audio_in_enabled=True,
         audio_out_enabled=True,
-        vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.2)),
-        turn_analyzer=LocalSmartTurnAnalyzerV3(params=SmartTurnParams()),
-    ),
-    "twilio": lambda: FastAPIWebsocketParams(
-        audio_in_enabled=True,
-        audio_out_enabled=True,
+        video_out_enabled=True,
+        video_out_width=1024,
+        video_out_height=1024,
         vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.2)),
         turn_analyzer=LocalSmartTurnAnalyzerV3(params=SmartTurnParams()),
     ),
     "webrtc": lambda: TransportParams(
         audio_in_enabled=True,
         audio_out_enabled=True,
+        video_out_enabled=True,
+        video_out_width=1024,
+        video_out_height=1024,
         vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.2)),
         turn_analyzer=LocalSmartTurnAnalyzerV3(params=SmartTurnParams()),
     ),
@@ -63,20 +75,20 @@ transport_params = {
 async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     logger.info(f"Starting bot")
 
-    stt = DeepgramSTTService(api_key=os.getenv("DEEPGRAM_API_KEY"))
-
-    tts = DeepgramTTSService(
-        api_key=os.getenv("DEEPGRAM_API_KEY"),
-        voice="aura-asteria-en",
-        base_url="http://0.0.0.0:8080",
+    stt = GoogleSTTService(
+        params=GoogleSTTService.InputParams(languages=Language.EN_US),
+        credentials=os.getenv("GOOGLE_TEST_CREDENTIALS"),
     )
 
-    llm = OpenAILLMService(
-        # To use OpenAI
-        # api_key=os.getenv("OPENAI_API_KEY"),
-        # Or, to use a local vLLM (or similar) api server
-        model="meta-llama/Meta-Llama-3-8B-Instruct",
-        base_url="http://0.0.0.0:8000/v1",
+    tts = GoogleTTSService(
+        voice_id="en-US-Chirp3-HD-Charon",
+        params=GoogleTTSService.InputParams(language=Language.EN_US),
+        credentials=os.getenv("GOOGLE_TEST_CREDENTIALS"),
+    )
+
+    llm = GoogleLLMService(
+        api_key=os.getenv("GOOGLE_API_KEY"),
+        model="gemini-2.5-flash-image",
     )
 
     messages = [
@@ -93,11 +105,11 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
         [
             transport.input(),  # Transport user input
             stt,  # STT
-            context_aggregator.user(),
+            context_aggregator.user(),  # User responses
             llm,  # LLM
-            tts,  # TTS
+            tts,  # Gemini TTS
             transport.output(),  # Transport bot output
-            context_aggregator.assistant(),
+            context_aggregator.assistant(),  # Assistant spoken responses
         ]
     )
 
@@ -110,42 +122,12 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
         idle_timeout_secs=runner_args.pipeline_idle_timeout_secs,
     )
 
-    # When the first participant joins, the bot should introduce itself.
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
         logger.info(f"Client connected")
-        # Kick off the conversation.
+        # Kick off the conversation with a styled introduction
         messages.append({"role": "system", "content": "Please introduce yourself to the user."})
         await task.queue_frames([LLMRunFrame()])
-
-    # Handle "latency-ping" messages. The client will send app messages that look like
-    # this:
-    #   { "latency-ping": { ts: <client-side timestamp> }}
-    #
-    # We want to send an immediate pong back to the client from this handler function.
-    # Also, we will push a frame into the top of the pipeline and send it after the
-    #
-    @transport.event_handler("on_app_message")
-    async def on_app_message(transport, message, sender):
-        try:
-            if "latency-ping" in message:
-                logger.debug(f"Received latency ping app message: {message}")
-                ts = message["latency-ping"]["ts"]
-                # Send immediately
-                await task.queue_frame(
-                    DailyOutputTransportMessageUrgentFrame(
-                        message={"latency-pong-msg-handler": {"ts": ts}}, participant_id=sender
-                    )
-                )
-                # And push to the pipeline for the Daily transport.output to send
-                await task.queue_frame(
-                    DailyOutputTransportMessageFrame(
-                        message={"latency-pong-pipeline-delivery": {"ts": ts}},
-                        participant_id=sender,
-                    )
-                )
-        except Exception as e:
-            logger.debug(f"message handling error: {e} - {message}")
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
