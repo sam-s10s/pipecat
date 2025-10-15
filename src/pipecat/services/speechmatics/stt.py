@@ -9,7 +9,7 @@
 import asyncio
 import os
 import time
-from typing import Any, AsyncGenerator, Optional
+from typing import Any, AsyncGenerator
 
 from dotenv import load_dotenv
 from loguru import logger
@@ -45,6 +45,7 @@ try:
         SpeakerFocusConfig,
         SpeakerFocusMode,
         SpeakerIdentifier,
+        SpeechSegmentConfig,
         VoiceAgentClient,
         VoiceAgentConfig,
     )
@@ -317,6 +318,10 @@ class SpeechmaticsSTTService(STTService):
         # Metrics
         self.set_model_name(self._config.operating_point.value)
 
+        # Message queue
+        self._stt_msg_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self._stt_msg_task: asyncio.Task | None = None
+
         # Speaking states
         self._is_speaking: bool = False
         self._bot_speaking: bool = False
@@ -329,16 +334,30 @@ class SpeechmaticsSTTService(STTService):
         """Called when the new session starts."""
         await super().start(frame)
         await self._connect()
+        self._stt_msg_task = asyncio.create_task(self._process_stt_messages())
 
     async def stop(self, frame: EndFrame):
         """Called when the session ends."""
+        if self._stt_msg_task and not self._stt_msg_task.done():
+            self._stt_msg_task.cancel()
         await super().stop(frame)
         await self._disconnect()
 
     async def cancel(self, frame: CancelFrame):
         """Called when the session is cancelled."""
+        if self._stt_msg_task and not self._stt_msg_task.done():
+            self._stt_msg_task.cancel()
         await super().cancel(frame)
         await self._disconnect()
+
+    async def _process_stt_messages(self) -> None:
+        """Process messages from the STT client."""
+        try:
+            while True:
+                message = await self._stt_msg_queue.get()
+                await self._handle_message(message)
+        except asyncio.CancelledError:
+            pass
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         """Process frames for VAD and metrics handling.
@@ -361,8 +380,16 @@ class SpeechmaticsSTTService(STTService):
             if not self._enable_vad and self._client is not None:
                 self._client.finalize()
 
+    def can_generate_metrics(self) -> bool:
+        """Check if this service can generate processing metrics.
+
+        Returns:
+            True, as Speechmatics STT supports generation of metrics.
+        """
+        return True
+
     @traced_stt
-    async def _trace_transcription(self, transcript: str, is_final: bool, language: Language):
+    async def _handle_transcription(self, transcript: str, is_final: bool, language: Language):
         """Record transcription event for tracing."""
         pass
 
@@ -439,72 +466,23 @@ class SpeechmaticsSTTService(STTService):
             config=self._config,
         )
 
-        # Interim segment event
-        @self._client.on(AgentServerMessageType.ADD_PARTIAL_SEGMENT)
-        def _evt_on_interim_segment(message: dict[str, Any]):
-            segments: list[dict[str, Any]] = message.get("segments", [])
-            if segments:
-                asyncio.run_coroutine_threadsafe(self._send_frames(segments), self.get_event_loop())
+        # Add message queue
+        def add_message(message: dict[str, Any]):
+            self._stt_msg_queue.put_nowait(message)
 
-        # Final segment event
-        @self._client.on(AgentServerMessageType.ADD_SEGMENT)
-        def _evt_on_final_segment(message: dict[str, Any]):
-            segments: list[dict[str, Any]] = message.get("segments", [])
-            if segments:
-                asyncio.run_coroutine_threadsafe(
-                    self._send_frames(segments, finalized=True), self.get_event_loop()
-                )
+        # Add listeners
+        self._client.on(AgentServerMessageType.ADD_PARTIAL_SEGMENT, add_message)
+        self._client.on(AgentServerMessageType.ADD_SEGMENT, add_message)
+        self._client.on(AgentServerMessageType.TTFB_METRICS, add_message)
 
-        # VAD events
+        # Add listeners for VAD
         if self._enable_vad:
+            self._client.on(AgentServerMessageType.START_OF_TURN, add_message)
+            self._client.on(AgentServerMessageType.END_OF_TURN, add_message)
 
-            @self._client.on(AgentServerMessageType.SPEAKER_STARTED)
-            def _evt_on_speech_started(message: dict[str, Any]):
-                status: dict[str, Any] = message.get("status", {})
-                asyncio.run_coroutine_threadsafe(
-                    self._send_vad_frame(
-                        speaking=status.get("is_active", True), speaker_id=status.get("speaker_id")
-                    ),
-                    self.get_event_loop(),
-                )
-
-            @self._client.on(AgentServerMessageType.SPEAKER_ENDED)
-            def _evt_on_speech_ended(message: dict[str, Any]):
-                status: dict[str, Any] = message.get("status", {})
-                asyncio.run_coroutine_threadsafe(
-                    self._send_vad_frame(
-                        speaking=status.get("is_active", True), speaker_id=status.get("speaker_id")
-                    ),
-                    self.get_event_loop(),
-                )
-
-        # Log end of turn
-        @self._client.on(AgentServerMessageType.END_OF_TURN)
-        def _evt_on_turn_ended(message: dict[str, Any]):
-            logger.debug(message)
-
-        # Speaker Result
+        # Speaker result listener
         if self._config.enable_diarization:
-
-            @self._client.on(AgentServerMessageType.SPEAKERS_RESULT)
-            def _evt_on_speakers_result(message: dict[str, Any]):
-                logger.debug(f"{self} speakers result received from STT")
-                asyncio.run_coroutine_threadsafe(
-                    self._call_event_handler("on_speakers_result", message),
-                    self.get_event_loop(),
-                )
-
-        # Metrics
-        # @self._client.on(AgentServerMessageType.METRICS)
-        # def _evt_on_metrics(message: dict[str, Any]):
-        #     logger.debug(f"Metrics received from STT: {message}")
-
-        # TTFB Metrics
-        @self._client.on(AgentServerMessageType.TTFB_METRICS)
-        def _evt_on_ttfb_metrics(message: dict[str, Any]):
-            asyncio.run_coroutine_threadsafe(
-                self._emit_ttfb_metrics(message.get("ttfb")), self.get_event_loop()
-            )
+            self._client.on(AgentServerMessageType.SPEAKERS_RESULT, add_message)
 
         # Connect to the client
         try:
@@ -568,10 +546,124 @@ class SpeechmaticsSTTService(STTService):
             # Advanced
             include_results=True,
             enable_preview_features=params.enable_preview_features,
+            speech_segment_config=SpeechSegmentConfig(split_on_eos=False),
             # Audio
             sample_rate=sample_rate,
             audio_encoding=params.audio_encoding,
         )
+
+    async def _handle_message(self, message: dict[str, Any]) -> None:
+        """Handle a message from the STT client."""
+        event = message.get("message", "")
+
+        # Handle events
+        match event:
+            case AgentServerMessageType.ADD_PARTIAL_SEGMENT:
+                await self._handle_partial_segment(message)
+            case AgentServerMessageType.ADD_SEGMENT:
+                await self._handle_segment(message)
+            case AgentServerMessageType.START_OF_TURN:
+                await self._handle_start_of_turn(message)
+            case AgentServerMessageType.END_OF_TURN:
+                await self._handle_end_of_turn(message)
+            case AgentServerMessageType.SPEAKERS_RESULT:
+                await self._handle_speakers_result(message)
+            case AgentServerMessageType.TTFB_METRICS:
+                await self._handle_ttfb_metrics(message)
+            case _:
+                logger.debug(f"Unhandled message: {event}")
+
+    async def _handle_partial_segment(self, message: dict[str, Any]) -> None:
+        """Handle AddPartialSegment events.
+
+        AddPartialSegment events are triggered by Speechmatics STT when it detects a
+        partial segment of speech. These events provide the partial transcript for
+        the current speaking turn.
+
+        Args:
+            message: the message payload.
+        """
+        segments: list[dict[str, Any]] = message.get("segments", [])
+        if segments:
+            await self._send_frames(segments)
+
+    async def _handle_segment(self, message: dict[str, Any]) -> None:
+        """Handle AddSegment events.
+
+        AddSegment events are triggered by Speechmatics STT when it detects a
+        final segment of speech. These events provide the final transcript for
+        the current speaking turn.
+
+        Args:
+            message: the message payload.
+        """
+        segments: list[dict[str, Any]] = message.get("segments", [])
+        if segments:
+            await self._send_frames(segments, finalized=True)
+
+    async def _handle_start_of_turn(self, message: dict[str, Any]) -> None:
+        """Handle StartOfTurn events.
+
+        When Speechmatics STT detects the start of a new speaking turn, a StartOfTurn
+        event is triggered. This triggers bot interruption to stop any ongoing speech
+        synthesis and signals the start of user speech detection.
+
+        The service will:
+        - Send a BotInterruptionFrame upstream to stop bot speech
+        - Send a UserStartedSpeakingFrame downstream to notify other components
+        - Start metrics collection for measuring response times
+
+        Args:
+            message: the message payload.
+        """
+        logger.debug(f"{self} User {message.get('speaker_id') or 'UU'} started speaking")
+        await self.push_interruption_task_frame_and_wait()
+        await self.push_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await self.push_frame(UserStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await self.start_processing_metrics()
+
+    async def _handle_end_of_turn(self, message: dict[str, Any]) -> None:
+        """Handle EndOfTurn events.
+
+        EndOfTurn events are triggered by Speechmatics STT when it concludes a
+        speaking turn. This occurs either due to silence or reaching the
+        end-of-turn confidence thresholds. These events provide the final
+        transcript for the completed turn.
+
+        The service will:
+        - Stop processing metrics collection
+        - Send a UserStoppedSpeakingFrame to signal turn completion
+
+        Args:
+            message: the message payload.
+        """
+        logger.debug(f"{self} User {message.get('speaker_id') or 'UU'} stopped speaking")
+        await self.stop_processing_metrics()
+        await self.push_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await self.push_frame(UserStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+
+    async def _handle_speakers_result(self, message: dict[str, Any]) -> None:
+        """Handle SpeakersResult events.
+
+        SpeakersResult events are triggered by Speechmatics STT when it provides
+        speaker information for the current speaking turn.
+
+        Args:
+            message: the message payload.
+        """
+        logger.debug(f"{self} speakers result received from STT")
+        await self._call_event_handler("on_speakers_result", message)
+
+    async def _handle_ttfb_metrics(self, message: dict[str, Any]) -> None:
+        """Handle TTFB metrics events.
+
+        TTFB metrics events are triggered by Speechmatics STT when it provides
+        metrics for the current speaking turn.
+
+        Args:
+            message: the message payload.
+        """
+        await self._emit_ttfb_metrics(message.get("ttfb"))
 
     async def _send_frames(self, segments: list[dict[str, Any]], finalized: bool = False) -> None:
         """Send frames to the pipeline.
@@ -616,7 +708,7 @@ class SpeechmaticsSTTService(STTService):
         if finalized:
             frames += [TranscriptionFrame(**attr_from_segment(segment)) for segment in segments]
             finalized_text = "|".join([s["text"] for s in segments])
-            await self._trace_transcription(finalized_text, True, segments[0]["language"])
+            await self._handle_transcription(finalized_text, True, segments[0]["language"])
             logger.debug(f"{self} finalized transcript: {[f.text for f in frames]}")
 
         # Return as interim results (unformatted)
@@ -629,45 +721,6 @@ class SpeechmaticsSTTService(STTService):
         # Send the frames
         for frame in frames:
             await self.push_frame(frame)
-
-    async def _send_vad_frame(
-        self, speaking: bool = False, speaker_id: Optional[str] = None
-    ) -> None:
-        """Send VAD frame to the pipeline.
-
-        This will emit a UserStartedSpeakingFrame or UserStoppedSpeakingFrame
-        depending on the value of `speaking`. It will also emit an interruption
-        for the pipeline to handle interruption of the bot.
-
-        Args:
-            speaking: Whether the user is speaking or not.
-            speaker_id: The speaker ID, if known.
-        """
-        # Skip if VAD not enabled
-        if not self._enable_vad:
-            return
-
-        # If VAD is enabled, then send a speaking frame
-        if speaking:
-            logger.debug(f"{self} user {speaker_id or 'UU'} started speaking")
-            self._is_speaking = True
-            if self._bot_speaking:
-                await self.push_interruption_task_frame_and_wait()
-            await self.push_frame(UserStartedSpeakingFrame())
-
-        # User has stopped speaking
-        else:
-            logger.debug(f"{self} user {speaker_id or 'UU'} stopped speaking")
-            self._is_speaking = False
-            await self.push_frame(UserStoppedSpeakingFrame())
-
-    def can_generate_metrics(self) -> bool:
-        """Check if this service can generate processing metrics.
-
-        Returns:
-            True, as Deepgram service supports metrics generation.
-        """
-        return True
 
     async def _emit_ttfb_metrics(self, ttfb: int) -> None:
         """Create TTFB metrics.
