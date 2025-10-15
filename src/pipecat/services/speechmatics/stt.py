@@ -59,16 +59,11 @@ except ModuleNotFoundError as e:
 
 __all__ = [
     "AdditionalVocabEntry",
-    "AgentClientMessageType",
-    "AgentServerMessageType",
-    "AudioEncoding",
     "EndOfUtteranceMode",
     "OperatingPoint",
     "SpeakerFocusConfig",
     "SpeakerFocusMode",
     "SpeakerIdentifier",
-    "VoiceAgentClient",
-    "VoiceAgentConfig",
 ]
 
 
@@ -330,6 +325,10 @@ class SpeechmaticsSTTService(STTService):
         if params.enable_diarization:
             self._register_event_handler("on_speakers_result")
 
+    # ============================================================================
+    # LIFE-CYCLE / SESSION MANAGEMENT
+    # ============================================================================
+
     async def start(self, frame: StartFrame):
         """Called when the new session starts."""
         await super().start(frame)
@@ -349,109 +348,6 @@ class SpeechmaticsSTTService(STTService):
             self._stt_msg_task.cancel()
         await super().cancel(frame)
         await self._disconnect()
-
-    async def _process_stt_messages(self) -> None:
-        """Process messages from the STT client."""
-        try:
-            while True:
-                message = await self._stt_msg_queue.get()
-                await self._handle_message(message)
-        except asyncio.CancelledError:
-            pass
-
-    async def process_frame(self, frame: Frame, direction: FrameDirection):
-        """Process frames for VAD and metrics handling.
-
-        Args:
-            frame: Frame to process.
-            direction: Direction of frame processing.
-        """
-        # Forward to parent
-        await super().process_frame(frame, direction)
-
-        # Track the bot
-        if isinstance(frame, BotStartedSpeakingFrame):
-            self._bot_speaking = True
-        elif isinstance(frame, BotStoppedSpeakingFrame):
-            self._bot_speaking = False
-
-        # Force finalization
-        if isinstance(frame, UserStoppedSpeakingFrame):
-            if not self._enable_vad and self._client is not None:
-                self._client.finalize()
-
-    def can_generate_metrics(self) -> bool:
-        """Check if this service can generate processing metrics.
-
-        Returns:
-            True, as Speechmatics STT supports generation of metrics.
-        """
-        return True
-
-    @traced_stt
-    async def _handle_transcription(self, transcript: str, is_final: bool, language: Language):
-        """Record transcription event for tracing."""
-        pass
-
-    async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
-        """Adds audio to the audio buffer and yields None."""
-        try:
-            if self._client:
-                await self._client.send_audio(audio)
-            yield None
-        except Exception as e:
-            logger.error(f"Speechmatics error: {e}")
-            yield ErrorFrame(f"Speechmatics error: {e}", fatal=False)
-            await self._disconnect()
-
-    def update_params(
-        self,
-        params: UpdateParams,
-    ) -> None:
-        """Updates the speaker configuration.
-
-        This can update the speakers to listen to or ignore during an in-flight
-        transcription. Only available if diarization is enabled.
-
-        Args:
-            params: Update parameters for the service.
-        """
-        # Check possible
-        if not self._config.enable_diarization:
-            raise ValueError("Diarization is not enabled")
-
-        # Update the existing diarization configuration
-        if params.focus_speakers is not None:
-            self._config.speaker_config.focus_speakers = params.focus_speakers
-        if params.ignore_speakers is not None:
-            self._config.speaker_config.ignore_speakers = params.ignore_speakers
-        if params.focus_mode is not None:
-            self._config.speaker_config.focus_mode = params.focus_mode
-
-        # Send the update
-        if self._client:
-            self._client.update_diarization_config(self._config.speaker_config)
-
-    async def send_message(self, message: AgentClientMessageType | str, **kwargs: Any) -> None:
-        """Send a message to the STT service.
-
-        This sends a message to the STT service via the underlying transport. If the session
-        is not running, this will raise an exception. Messages in the wrong format will also
-        cause an error.
-
-        Args:
-            message: Message to send to the STT service.
-            **kwargs: Additional arguments passed to the underlying transport.
-        """
-        try:
-            payload = {"message": message}
-            payload.update(kwargs)
-            logger.debug(f"{self} sending message to STT: {payload}")
-            asyncio.run_coroutine_threadsafe(
-                self._client.send_message(payload), self.get_event_loop()
-            )
-        except Exception as e:
-            raise RuntimeError(f"{self} error sending message to STT: {e}")
 
     async def _connect(self) -> None:
         """Connect to the STT service."""
@@ -507,6 +403,19 @@ class SpeechmaticsSTTService(STTService):
             self._client = None
             await self._call_event_handler("on_disconnected")
 
+    async def _process_stt_messages(self) -> None:
+        """Process messages from the STT client."""
+        try:
+            while True:
+                message = await self._stt_msg_queue.get()
+                await self._handle_message(message)
+        except asyncio.CancelledError:
+            pass
+
+    # ============================================================================
+    # CONFIGURATION
+    # ============================================================================
+
     def _prepare_config(self, sample_rate: int, params: InputParams | None = None) -> None:
         """Parse the InputParams into VoiceAgentConfig."""
         # Default config
@@ -551,6 +460,38 @@ class SpeechmaticsSTTService(STTService):
             sample_rate=sample_rate,
             audio_encoding=params.audio_encoding,
         )
+
+    def update_params(
+        self,
+        params: UpdateParams,
+    ) -> None:
+        """Updates the speaker configuration.
+
+        This can update the speakers to listen to or ignore during an in-flight
+        transcription. Only available if diarization is enabled.
+
+        Args:
+            params: Update parameters for the service.
+        """
+        # Check possible
+        if not self._config.enable_diarization:
+            raise ValueError("Diarization is not enabled")
+
+        # Update the existing diarization configuration
+        if params.focus_speakers is not None:
+            self._config.speaker_config.focus_speakers = params.focus_speakers
+        if params.ignore_speakers is not None:
+            self._config.speaker_config.ignore_speakers = params.ignore_speakers
+        if params.focus_mode is not None:
+            self._config.speaker_config.focus_mode = params.focus_mode
+
+        # Send the update
+        if self._client:
+            self._client.update_diarization_config(self._config.speaker_config)
+
+    # ============================================================================
+    # HANDLE ENGINE MESSAGES
+    # ============================================================================
 
     async def _handle_message(self, message: dict[str, Any]) -> None:
         """Handle a message from the STT client."""
@@ -654,16 +595,30 @@ class SpeechmaticsSTTService(STTService):
         logger.debug(f"{self} speakers result received from STT")
         await self._call_event_handler("on_speakers_result", message)
 
-    async def _handle_ttfb_metrics(self, message: dict[str, Any]) -> None:
-        """Handle TTFB metrics events.
+    # ============================================================================
+    # SEND FRAMES TO PIPELINE
+    # ============================================================================
 
-        TTFB metrics events are triggered by Speechmatics STT when it provides
-        metrics for the current speaking turn.
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        """Process frames for VAD and metrics handling.
 
         Args:
-            message: the message payload.
+            frame: Frame to process.
+            direction: Direction of frame processing.
         """
-        await self._emit_ttfb_metrics(message.get("ttfb"))
+        # Forward to parent
+        await super().process_frame(frame, direction)
+
+        # Track the bot
+        if isinstance(frame, BotStartedSpeakingFrame):
+            self._bot_speaking = True
+        elif isinstance(frame, BotStoppedSpeakingFrame):
+            self._bot_speaking = False
+
+        # Force finalization
+        if isinstance(frame, UserStoppedSpeakingFrame):
+            if not self._enable_vad and self._client is not None:
+                self._client.finalize()
 
     async def _send_frames(self, segments: list[dict[str, Any]], finalized: bool = False) -> None:
         """Send frames to the pipeline.
@@ -722,6 +677,70 @@ class SpeechmaticsSTTService(STTService):
         for frame in frames:
             await self.push_frame(frame)
 
+    # ============================================================================
+    # PUBLIC FUNCTIONS
+    # ============================================================================
+
+    async def send_message(self, message: AgentClientMessageType | str, **kwargs: Any) -> None:
+        """Send a message to the STT service.
+
+        This sends a message to the STT service via the underlying transport. If the session
+        is not running, this will raise an exception. Messages in the wrong format will also
+        cause an error.
+
+        Args:
+            message: Message to send to the STT service.
+            **kwargs: Additional arguments passed to the underlying transport.
+        """
+        try:
+            payload = {"message": message}
+            payload.update(kwargs)
+            logger.debug(f"{self} sending message to STT: {payload}")
+            asyncio.run_coroutine_threadsafe(
+                self._client.send_message(payload), self.get_event_loop()
+            )
+        except Exception as e:
+            raise RuntimeError(f"{self} error sending message to STT: {e}")
+
+    # ============================================================================
+    # METRICS
+    # ============================================================================
+
+    def can_generate_metrics(self) -> bool:
+        """Check if this service can generate processing metrics.
+
+        Returns:
+            True, as Speechmatics STT supports generation of metrics.
+        """
+        return True
+
+    @traced_stt
+    async def _handle_transcription(self, transcript: str, is_final: bool, language: Language):
+        """Record transcription event for tracing."""
+        pass
+
+    async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
+        """Adds audio to the audio buffer and yields None."""
+        try:
+            if self._client:
+                await self._client.send_audio(audio)
+            yield None
+        except Exception as e:
+            logger.error(f"Speechmatics error: {e}")
+            yield ErrorFrame(f"Speechmatics error: {e}", fatal=False)
+            await self._disconnect()
+
+    async def _handle_ttfb_metrics(self, message: dict[str, Any]) -> None:
+        """Handle TTFB metrics events.
+
+        TTFB metrics events are triggered by Speechmatics STT when it provides
+        metrics for the current speaking turn.
+
+        Args:
+            message: the message payload.
+        """
+        await self._emit_ttfb_metrics(message.get("ttfb"))
+
     async def _emit_ttfb_metrics(self, ttfb: int) -> None:
         """Create TTFB metrics.
 
@@ -747,6 +766,11 @@ class SpeechmaticsSTTService(STTService):
 
         # TODO - have this elsewhere to capture all processing time?
         await self.stop_processing_metrics()
+
+
+# ============================================================================
+# HELPERS
+# ============================================================================
 
 
 def _language_to_speechmatics_language(language: Language) -> str:
