@@ -10,7 +10,6 @@ import os
 from typing import AsyncGenerator, Optional
 
 import aiohttp
-import numpy as np
 from loguru import logger
 from pydantic import BaseModel
 

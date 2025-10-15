@@ -40,11 +40,11 @@ try:
         AgentClientMessageType,
         AgentServerMessageType,
         AudioEncoding,
-        DiarizationFocusMode,
-        DiarizationKnownSpeaker,
-        DiarizationSpeakerConfig,
         EndOfUtteranceMode,
         OperatingPoint,
+        SpeakerFocusConfig,
+        SpeakerFocusMode,
+        SpeakerIdentifier,
         VoiceAgentClient,
         VoiceAgentConfig,
     )
@@ -55,7 +55,22 @@ except ModuleNotFoundError as e:
     )
     raise Exception(f"Missing module: {e}")
 
-# Load environment variables
+
+__all__ = [
+    "AdditionalVocabEntry",
+    "AgentClientMessageType",
+    "AgentServerMessageType",
+    "AudioEncoding",
+    "EndOfUtteranceMode",
+    "OperatingPoint",
+    "SpeakerFocusConfig",
+    "SpeakerFocusMode",
+    "SpeakerIdentifier",
+    "VoiceAgentClient",
+    "VoiceAgentConfig",
+]
+
+
 load_dotenv()
 
 
@@ -162,11 +177,11 @@ class SpeechmaticsSTTService(STTService):
                 `__ASSISTANT__`).
                 Defaults to [].
 
-            focus_mode: Speaker focus mode for diarization. When set to `DiarizationFocusMode.RETAIN`,
+            focus_mode: Speaker focus mode for diarization. When set to `SpeakerFocusMode.RETAIN`,
                 the STT engine will retain words spoken by other speakers (not listed in `ignore_speakers`)
-                and process them as passive speaker frames. When set to `DiarizationFocusMode.IGNORE`,
+                and process them as passive speaker frames. When set to `SpeakerFocusMode.IGNORE`,
                 the STT engine will ignore words spoken by other speakers and they will not be processed.
-                Defaults to `DiarizationFocusMode.RETAIN`.
+                Defaults to `SpeakerFocusMode.RETAIN`.
 
             known_speakers: List of known speaker labels and identifiers. If you supply a list of
                 labels and identifiers for speakers, then the STT engine will use them to attribute
@@ -207,8 +222,8 @@ class SpeechmaticsSTTService(STTService):
         prefer_current_speaker: bool = False
         focus_speakers: list[str] = []
         ignore_speakers: list[str] = []
-        focus_mode: DiarizationFocusMode = DiarizationFocusMode.RETAIN
-        known_speakers: list[DiarizationKnownSpeaker] = []
+        focus_mode: SpeakerFocusMode = SpeakerFocusMode.RETAIN
+        known_speakers: list[SpeakerIdentifier] = []
 
         # Advanced features
         enable_preview_features: bool = False
@@ -237,16 +252,16 @@ class SpeechmaticsSTTService(STTService):
                 `__ASSISTANT__`).
                 Defaults to [].
 
-            focus_mode: Speaker focus mode for diarization. When set to `DiarizationFocusMode.RETAIN`,
+            focus_mode: Speaker focus mode for diarization. When set to `SpeakerFocusMode.RETAIN`,
                 the STT engine will retain words spoken by other speakers (not listed in `ignore_speakers`)
-                and process them as passive speaker frames. When set to `DiarizationFocusMode.IGNORE`,
+                and process them as passive speaker frames. When set to `SpeakerFocusMode.IGNORE`,
                 the STT engine will ignore words spoken by other speakers and they will not be processed.
-                Defaults to `DiarizationFocusMode.RETAIN`.
+                Defaults to `SpeakerFocusMode.RETAIN`.
         """
 
         focus_speakers: list[str] = []
         ignore_speakers: list[str] = []
-        focus_mode: DiarizationFocusMode = DiarizationFocusMode.RETAIN
+        focus_mode: SpeakerFocusMode = SpeakerFocusMode.RETAIN
 
     def __init__(
         self,
@@ -543,7 +558,7 @@ class SpeechmaticsSTTService(STTService):
             speaker_sensitivity=params.speaker_sensitivity,
             max_speakers=params.max_speakers,
             prefer_current_speaker=params.prefer_current_speaker,
-            speaker_config=DiarizationSpeakerConfig(
+            speaker_config=SpeakerFocusConfig(
                 focus_speakers=params.focus_speakers,
                 ignore_speakers=params.ignore_speakers,
                 focus_mode=params.focus_mode,
