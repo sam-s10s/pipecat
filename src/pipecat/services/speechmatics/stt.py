@@ -350,7 +350,12 @@ class SpeechmaticsSTTService(STTService):
         await self._disconnect()
 
     async def _connect(self) -> None:
-        """Connect to the STT service."""
+        """Connect to the STT service.
+
+        - Create STT client
+        - Register handlers for messages
+        - Connect to the client
+        """
         # Log the event
         logger.debug(f"{self} connecting to Speechmatics STT service")
 
@@ -389,7 +394,11 @@ class SpeechmaticsSTTService(STTService):
             self._client = None
 
     async def _disconnect(self) -> None:
-        """Disconnect from the STT service."""
+        """Disconnect from the STT service.
+
+        - Disconnect the client
+        - Emit on_disconnected event handler for clients
+        """
         # Disconnect the client
         logger.debug(f"{self} disconnecting from Speechmatics STT service")
         try:
@@ -404,7 +413,11 @@ class SpeechmaticsSTTService(STTService):
             await self._call_event_handler("on_disconnected")
 
     async def _process_stt_messages(self) -> None:
-        """Process messages from the STT client."""
+        """Process messages from the STT client.
+
+        Messages from the STT client are processed in a separate task to avoid blocking the main
+        thread. They are handled in strict order in which they are received.
+        """
         try:
             while True:
                 message = await self._stt_msg_queue.get()
@@ -512,7 +525,7 @@ class SpeechmaticsSTTService(STTService):
             case AgentServerMessageType.TTFB_METRICS:
                 await self._handle_ttfb_metrics(message)
             case _:
-                logger.debug(f"Unhandled message: {event}")
+                logger.debug(f"{self} Unhandled message: {event}")
 
     async def _handle_partial_segment(self, message: dict[str, Any]) -> None:
         """Handle AddPartialSegment events.
@@ -726,8 +739,8 @@ class SpeechmaticsSTTService(STTService):
                 await self._client.send_audio(audio)
             yield None
         except Exception as e:
-            logger.error(f"Speechmatics error: {e}")
-            yield ErrorFrame(f"Speechmatics error: {e}", fatal=False)
+            logger.error(f"{self} Speechmatics error: {e}")
+            yield ErrorFrame(f"{self} Speechmatics error: {e}", fatal=False)
             await self._disconnect()
 
     async def _handle_ttfb_metrics(self, message: dict[str, Any]) -> None:
@@ -875,7 +888,7 @@ def _locale_to_speechmatics_locale(language_code: str, locale: Language) -> str 
 
     # Fail if locale is not supported
     if not result:
-        logger.warning(f"Unsupported output locale: {locale}, defaulting to {language_code}")
+        logger.warning(f"{self} Unsupported output locale: {locale}, defaulting to {language_code}")
 
     # Return the locale code
     return result
