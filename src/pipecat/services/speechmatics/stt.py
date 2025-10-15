@@ -294,7 +294,7 @@ class SpeechmaticsSTTService(STTService):
             raise ValueError("Missing Speechmatics base URL")
 
         # Deprecation check
-        _check_deprecated_args(kwargs, params)
+        self._check_deprecated_args(kwargs, params)
 
         # Voice agent
         self._client: VoiceAgentClient | None = None
@@ -333,7 +333,7 @@ class SpeechmaticsSTTService(STTService):
         """Called when the new session starts."""
         await super().start(frame)
         await self._connect()
-        self._stt_msg_task = asyncio.create_task(self._process_stt_messages())
+        self._stt_msg_task = self.create_task(self._process_stt_messages())
 
     async def stop(self, frame: EndFrame):
         """Called when the session ends."""
@@ -445,8 +445,10 @@ class SpeechmaticsSTTService(STTService):
             # Service
             operating_point=params.operating_point,
             domain=params.domain,
-            language=_language_to_speechmatics_language(params.language),
-            output_locale=_locale_to_speechmatics_locale(params.language, params.output_locale),
+            language=self._language_to_speechmatics_language(params.language),
+            output_locale=self._locale_to_speechmatics_locale(
+                params.language, params.output_locale
+            ),
             # Features
             max_delay=params.max_delay,
             end_of_utterance_silence_trigger=params.end_of_utterance_silence_trigger,
@@ -570,7 +572,7 @@ class SpeechmaticsSTTService(STTService):
         Args:
             message: the message payload.
         """
-        logger.debug(f"{self} User {message.get('speaker_id') or 'UU'} started speaking")
+        logger.debug(f"{self} StartOfTurn received")
         await self.push_interruption_task_frame_and_wait()
         await self.push_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
         await self.push_frame(UserStartedSpeakingFrame(), FrameDirection.UPSTREAM)
@@ -591,7 +593,7 @@ class SpeechmaticsSTTService(STTService):
         Args:
             message: the message payload.
         """
-        logger.debug(f"{self} User {message.get('speaker_id') or 'UU'} stopped speaking")
+        logger.debug(f"{self} EndOfTurn received")
         await self.stop_processing_metrics()
         await self.push_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
         await self.push_frame(UserStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
@@ -709,9 +711,7 @@ class SpeechmaticsSTTService(STTService):
             payload = {"message": message}
             payload.update(kwargs)
             logger.debug(f"{self} sending message to STT: {payload}")
-            asyncio.run_coroutine_threadsafe(
-                self._client.send_message(payload), self.get_event_loop()
-            )
+            self.create_task(self._client.send_message(payload))
         except Exception as e:
             raise RuntimeError(f"{self} error sending message to STT: {e}")
 
@@ -780,165 +780,163 @@ class SpeechmaticsSTTService(STTService):
         # TODO - have this elsewhere to capture all processing time?
         await self.stop_processing_metrics()
 
+    # ============================================================================
+    # HELPERS
+    # ============================================================================
 
-# ============================================================================
-# HELPERS
-# ============================================================================
+    def _language_to_speechmatics_language(self, language: Language) -> str:
+        """Convert a Language enum to a Speechmatics language code.
 
+        Args:
+            language: The Language enum to convert.
 
-def _language_to_speechmatics_language(language: Language) -> str:
-    """Convert a Language enum to a Speechmatics language code.
+        Returns:
+            str: The Speechmatics language code, if found.
+        """
+        # List of supported input languages
+        BASE_LANGUAGES = {
+            Language.AR: "ar",
+            Language.BA: "ba",
+            Language.EU: "eu",
+            Language.BE: "be",
+            Language.BG: "bg",
+            Language.BN: "bn",
+            Language.YUE: "yue",
+            Language.CA: "ca",
+            Language.HR: "hr",
+            Language.CS: "cs",
+            Language.DA: "da",
+            Language.NL: "nl",
+            Language.EN: "en",
+            Language.EO: "eo",
+            Language.ET: "et",
+            Language.FA: "fa",
+            Language.FI: "fi",
+            Language.FR: "fr",
+            Language.GL: "gl",
+            Language.DE: "de",
+            Language.EL: "el",
+            Language.HE: "he",
+            Language.HI: "hi",
+            Language.HU: "hu",
+            Language.IT: "it",
+            Language.ID: "id",
+            Language.GA: "ga",
+            Language.JA: "ja",
+            Language.KO: "ko",
+            Language.LV: "lv",
+            Language.LT: "lt",
+            Language.MS: "ms",
+            Language.MT: "mt",
+            Language.CMN: "cmn",
+            Language.MR: "mr",
+            Language.MN: "mn",
+            Language.NO: "no",
+            Language.PL: "pl",
+            Language.PT: "pt",
+            Language.RO: "ro",
+            Language.RU: "ru",
+            Language.SK: "sk",
+            Language.SL: "sl",
+            Language.ES: "es",
+            Language.SV: "sv",
+            Language.SW: "sw",
+            Language.TA: "ta",
+            Language.TH: "th",
+            Language.TR: "tr",
+            Language.UG: "ug",
+            Language.UK: "uk",
+            Language.UR: "ur",
+            Language.VI: "vi",
+            Language.CY: "cy",
+        }
 
-    Args:
-        language: The Language enum to convert.
+        # Get the language code
+        result = BASE_LANGUAGES.get(language)
 
-    Returns:
-        str: The Speechmatics language code, if found.
-    """
-    # List of supported input languages
-    BASE_LANGUAGES = {
-        Language.AR: "ar",
-        Language.BA: "ba",
-        Language.EU: "eu",
-        Language.BE: "be",
-        Language.BG: "bg",
-        Language.BN: "bn",
-        Language.YUE: "yue",
-        Language.CA: "ca",
-        Language.HR: "hr",
-        Language.CS: "cs",
-        Language.DA: "da",
-        Language.NL: "nl",
-        Language.EN: "en",
-        Language.EO: "eo",
-        Language.ET: "et",
-        Language.FA: "fa",
-        Language.FI: "fi",
-        Language.FR: "fr",
-        Language.GL: "gl",
-        Language.DE: "de",
-        Language.EL: "el",
-        Language.HE: "he",
-        Language.HI: "hi",
-        Language.HU: "hu",
-        Language.IT: "it",
-        Language.ID: "id",
-        Language.GA: "ga",
-        Language.JA: "ja",
-        Language.KO: "ko",
-        Language.LV: "lv",
-        Language.LT: "lt",
-        Language.MS: "ms",
-        Language.MT: "mt",
-        Language.CMN: "cmn",
-        Language.MR: "mr",
-        Language.MN: "mn",
-        Language.NO: "no",
-        Language.PL: "pl",
-        Language.PT: "pt",
-        Language.RO: "ro",
-        Language.RU: "ru",
-        Language.SK: "sk",
-        Language.SL: "sl",
-        Language.ES: "es",
-        Language.SV: "sv",
-        Language.SW: "sw",
-        Language.TA: "ta",
-        Language.TH: "th",
-        Language.TR: "tr",
-        Language.UG: "ug",
-        Language.UK: "uk",
-        Language.UR: "ur",
-        Language.VI: "vi",
-        Language.CY: "cy",
-    }
+        # Fail if language is not supported
+        if not result:
+            raise ValueError(f"Unsupported language: {language}")
 
-    # Get the language code
-    result = BASE_LANGUAGES.get(language)
+        # Return the language code
+        return result
 
-    # Fail if language is not supported
-    if not result:
-        raise ValueError(f"Unsupported language: {language}")
+    def _locale_to_speechmatics_locale(self, language_code: str, locale: Language) -> str | None:
+        """Convert a Language enum to a Speechmatics language code.
 
-    # Return the language code
-    return result
+        Args:
+            language_code: The language code.
+            locale: The Language enum to convert.
 
+        Returns:
+            str: The Speechmatics language code, if found.
+        """
+        # Languages and output locales
+        LOCALES = {
+            "en": {
+                Language.EN_GB: "en-GB",
+                Language.EN_US: "en-US",
+                Language.EN_AU: "en-AU",
+            },
+        }
 
-def _locale_to_speechmatics_locale(language_code: str, locale: Language) -> str | None:
-    """Convert a Language enum to a Speechmatics language code.
+        # Get the locale code
+        result = LOCALES.get(language_code, {}).get(locale)
 
-    Args:
-        language_code: The language code.
-        locale: The Language enum to convert.
+        # Fail if locale is not supported
+        if not result:
+            logger.warning(
+                f"{self} Unsupported output locale: {locale}, defaulting to {language_code}"
+            )
 
-    Returns:
-        str: The Speechmatics language code, if found.
-    """
-    # Languages and output locales
-    LOCALES = {
-        "en": {
-            Language.EN_GB: "en-GB",
-            Language.EN_US: "en-US",
-            Language.EN_AU: "en-AU",
-        },
-    }
+        # Return the locale code
+        return result
 
-    # Get the locale code
-    result = LOCALES.get(language_code, {}).get(locale)
+    def _check_deprecated_args(self, kwargs: dict, params: InputParams) -> None:
+        """Check arguments for deprecation and update params if necessary.
 
-    # Fail if locale is not supported
-    if not result:
-        logger.warning(f"{self} Unsupported output locale: {locale}, defaulting to {language_code}")
+        This function will show deprecation warnings for deprecated arguments and
+        migrate them to the new location in the params object. If the new location
+        is None, the argument is not used.
 
-    # Return the locale code
-    return result
+        Args:
+            kwargs: Keyword arguments passed to the constructor.
+            params: Input parameters for the service.
+        """
 
+        # Show deprecation warnings
+        def _deprecation_warning(old: str, new: str | None = None):
+            import warnings
 
-def _check_deprecated_args(kwargs: dict, params: SpeechmaticsSTTService.InputParams) -> None:
-    """Check arguments for deprecation and update params if necessary.
+            with warnings.catch_warnings():
+                warnings.simplefilter("always")
+                if new:
+                    message = f"`{old}` is deprecated, use `InputParams.{new}`"
+                else:
+                    message = f"`{old}` is deprecated and not used"
+                warnings.warn(message, DeprecationWarning)
 
-    This function will show deprecation warnings for deprecated arguments and
-    migrate them to the new location in the params object. If the new location
-    is None, the argument is not used.
+        # List of deprecated arguments and their new location
+        deprecated_args = [
+            ("language", "language"),
+            ("language_code", "language"),
+            ("domain", "domain"),
+            ("output_locale", "output_locale"),
+            ("output_locale_code", "output_locale"),
+            ("enable_partials", None),
+            ("max_delay", "max_delay"),
+            ("chunk_size", "chunk_size"),
+            ("audio_encoding", "audio_encoding"),
+            ("end_of_utterance_silence_trigger", "end_of_utterance_silence_trigger"),
+            {"enable_speaker_diarization", "enable_diarization"},
+            ("text_format", "speaker_active_format"),
+            ("max_speakers", "max_speakers"),
+            ("transcription_config", None),
+        ]
 
-    Args:
-        kwargs: Keyword arguments passed to the constructor.
-        params: Input parameters for the service.
-    """
-
-    # Show deprecation warnings
-    def _deprecation_warning(old: str, new: str | None = None):
-        import warnings
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("always")
-            if new:
-                message = f"`{old}` is deprecated, use `InputParams.{new}`"
-            else:
-                message = f"`{old}` is deprecated and not used"
-            warnings.warn(message, DeprecationWarning)
-
-    # List of deprecated arguments and their new location
-    deprecated_args = [
-        ("language", "language"),
-        ("language_code", "language"),
-        ("domain", "domain"),
-        ("output_locale", "output_locale"),
-        ("output_locale_code", "output_locale"),
-        ("enable_partials", None),
-        ("max_delay", "max_delay"),
-        ("chunk_size", "chunk_size"),
-        ("audio_encoding", "audio_encoding"),
-        ("end_of_utterance_silence_trigger", "end_of_utterance_silence_trigger"),
-        {"enable_speaker_diarization", "enable_diarization"},
-        ("text_format", "speaker_active_format"),
-        ("max_speakers", "max_speakers"),
-        ("transcription_config", None),
-    ]
-
-    # Show warnings + migrate the arguments
-    for old, new in deprecated_args:
-        if old in kwargs:
-            _deprecation_warning(old, new)
-            if kwargs.get(old, None) is not None:
-                params.__setattr__(new, kwargs[old])
+        # Show warnings + migrate the arguments
+        for old, new in deprecated_args:
+            if old in kwargs:
+                _deprecation_warning(old, new)
+                if kwargs.get(old, None) is not None:
+                    params.__setattr__(new, kwargs[old])
