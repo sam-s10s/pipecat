@@ -28,7 +28,6 @@ from pipecat.frames.frames import (
     FrameProcessorPauseUrgentFrame,
     FrameProcessorResumeFrame,
     FrameProcessorResumeUrgentFrame,
-    InterruptionCompletedFrame,
     InterruptionFrame,
     InterruptionTaskFrame,
     StartFrame,
@@ -572,9 +571,7 @@ class FrameProcessor(BaseObject):
         # frames and we will process the frame right away. This is because a
         # previous system frame might be waiting for the interruption frame and
         # it's blocking the input task.
-        if self._wait_for_interruption and isinstance(
-            frame, (InterruptionFrame, InterruptionCompletedFrame)
-        ):
+        if self._wait_for_interruption and isinstance(frame, InterruptionFrame):
             await self.__process_frame(frame, direction, callback)
             return
 
@@ -664,17 +661,18 @@ class FrameProcessor(BaseObject):
 
         await self._call_event_handler("on_after_push_frame", frame)
 
-        # If we are waiting for an interruption and one completed, then we can
-        # unblock `push_interruption_task_frame_and_wait()`.
-        if self._wait_for_interruption and isinstance(frame, InterruptionCompletedFrame):
+        # If we are waiting for an interruption and we get an interruption, then
+        # we can unblock `push_interruption_task_frame_and_wait()`.
+        if self._wait_for_interruption and isinstance(frame, InterruptionFrame):
             self._wait_interruption_event.set()
 
     async def push_interruption_task_frame_and_wait(self):
         """Push an interruption task frame upstream and wait for the interruption.
 
         This function sends an `InterruptionTaskFrame` upstream to the pipeline
-        task and waits to receive an `InterruptionCompletedFrame`. This
-        guarantees the whole pipeline has been interrupted.
+        task and waits to receive the corresponding `InterruptionFrame`. When
+        the function finishes it is guaranteed that the `InterruptionFrame` has
+        been pushed downstream.
         """
         self._wait_for_interruption = True
 
@@ -879,14 +877,14 @@ class FrameProcessor(BaseObject):
 
         """
         while True:
+            (frame, direction, callback) = await self.__input_queue.get()
+
             if self.__should_block_system_frames and self.__input_event:
                 logger.trace(f"{self}: system frame processing paused")
                 await self.__input_event.wait()
                 self.__input_event.clear()
                 self.__should_block_system_frames = False
                 logger.trace(f"{self}: system frame processing resumed")
-
-            (frame, direction, callback) = await self.__input_queue.get()
 
             if isinstance(frame, SystemFrame):
                 await self.__process_frame(frame, direction, callback)
@@ -902,14 +900,14 @@ class FrameProcessor(BaseObject):
     async def __process_frame_task_handler(self):
         """Handle non-system frames from the process queue."""
         while True:
+            (frame, direction, callback) = await self.__process_queue.get()
+
             if self.__should_block_frames and self.__process_event:
                 logger.trace(f"{self}: frame processing paused")
                 await self.__process_event.wait()
                 self.__process_event.clear()
                 self.__should_block_frames = False
                 logger.trace(f"{self}: frame processing resumed")
-
-            (frame, direction, callback) = await self.__process_queue.get()
 
             await self.__process_frame(frame, direction, callback)
 

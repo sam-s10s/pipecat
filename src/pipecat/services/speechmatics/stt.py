@@ -527,6 +527,7 @@ class SpeechmaticsSTTService(STTService):
             logger.error(f"{self} error closing Speechmatics client: {e}")
         finally:
             self._client = None
+            await self._call_event_handler("on_disconnected")
 
     def _prepare_config(self, sample_rate: int, params: InputParams | None = None) -> None:
         """Parse the InputParams into VoiceAgentConfig."""
