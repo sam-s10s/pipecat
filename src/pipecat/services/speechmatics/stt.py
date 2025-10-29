@@ -46,6 +46,7 @@ try:
         SpeakerFocusMode,
         SpeakerIdentifier,
         SpeechSegmentConfig,
+        SpeechSegmentEmitMode,
         VoiceAgentClient,
         VoiceAgentConfig,
     )
@@ -374,7 +375,6 @@ class SpeechmaticsSTTService(STTService):
         # Add listeners
         self._client.on(AgentServerMessageType.ADD_PARTIAL_SEGMENT, add_message)
         self._client.on(AgentServerMessageType.ADD_SEGMENT, add_message)
-        self._client.on(AgentServerMessageType.TTFB_METRICS, add_message)
 
         # Add listeners for VAD
         if self._enable_vad:
@@ -470,7 +470,9 @@ class SpeechmaticsSTTService(STTService):
             # Advanced
             include_results=True,
             enable_preview_features=params.enable_preview_features,
-            speech_segment_config=SpeechSegmentConfig(split_on_eos=False),
+            speech_segment_config=SpeechSegmentConfig(
+                emit_mode=SpeechSegmentEmitMode.ON_END_OF_TURN
+            ),
             # Audio
             sample_rate=sample_rate,
             audio_encoding=params.audio_encoding,
@@ -524,8 +526,6 @@ class SpeechmaticsSTTService(STTService):
                 await self._handle_end_of_turn(message)
             case AgentServerMessageType.SPEAKERS_RESULT:
                 await self._handle_speakers_result(message)
-            case AgentServerMessageType.TTFB_METRICS:
-                await self._handle_ttfb_metrics(message)
             case _:
                 logger.debug(f"{self} Unhandled message: {event}")
 
@@ -539,9 +539,13 @@ class SpeechmaticsSTTService(STTService):
         Args:
             message: the message payload.
         """
+        # Handle segments
         segments: list[dict[str, Any]] = message.get("segments", [])
         if segments:
             await self._send_frames(segments)
+
+        # Update metrics
+        await self._emit_metrics(message.get("metadata", {}).get("processing_time", 0.0))
 
     async def _handle_segment(self, message: dict[str, Any]) -> None:
         """Handle AddSegment events.
@@ -553,6 +557,7 @@ class SpeechmaticsSTTService(STTService):
         Args:
             message: the message payload.
         """
+        # Handle segments
         segments: list[dict[str, Any]] = message.get("segments", [])
         if segments:
             await self._send_frames(segments, finalized=True)
@@ -576,7 +581,7 @@ class SpeechmaticsSTTService(STTService):
         await self.push_interruption_task_frame_and_wait()
         await self.push_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
         await self.push_frame(UserStartedSpeakingFrame(), FrameDirection.UPSTREAM)
-        await self.start_processing_metrics()
+        # await self.start_processing_metrics()
 
     async def _handle_end_of_turn(self, message: dict[str, Any]) -> None:
         """Handle EndOfTurn events.
@@ -594,7 +599,7 @@ class SpeechmaticsSTTService(STTService):
             message: the message payload.
         """
         logger.debug(f"{self} EndOfTurn received")
-        await self.stop_processing_metrics()
+        # await self.stop_processing_metrics()
         await self.push_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
         await self.push_frame(UserStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
 
@@ -743,32 +748,19 @@ class SpeechmaticsSTTService(STTService):
             yield ErrorFrame(f"{self} Speechmatics error: {e}", fatal=False)
             await self._disconnect()
 
-    async def _handle_ttfb_metrics(self, message: dict[str, Any]) -> None:
-        """Handle TTFB metrics events.
-
-        TTFB metrics events are triggered by Speechmatics STT when it provides
-        metrics for the current speaking turn.
-
-        Args:
-            message: the message payload.
-        """
-        await self._emit_ttfb_metrics(message.get("ttfb"))
-
-    async def _emit_ttfb_metrics(self, ttfb: int) -> None:
+    async def _emit_metrics(self, processing_time: float) -> None:
         """Create TTFB metrics.
 
-        The TTFB is the miliseconds between the person speaking and the STT
+        The TTFB is the seconds between the person speaking and the STT
         engine emitting the first partial. This is only calculated at the
         start of an utterance.
         """
         # Skip if metrics not available
-        if not self._metrics:
+        if not self._metrics or processing_time == 0.0:
             return
 
         # Calculate time as time.time() - ttfb (which is seconds)
-        start_time = time.time() - (ttfb / 1000.0)
-
-        # TODO - this does not use official methods!
+        start_time = time.time() - processing_time
 
         # Update internal metrics
         self._metrics._start_ttfb_time = start_time
@@ -776,8 +768,6 @@ class SpeechmaticsSTTService(STTService):
 
         # Stop TTFB metrics
         await self.stop_ttfb_metrics()
-
-        # TODO - have this elsewhere to capture all processing time?
         await self.stop_processing_metrics()
 
     # ============================================================================
@@ -905,7 +895,7 @@ class SpeechmaticsSTTService(STTService):
         """
 
         # Show deprecation warnings
-        def _deprecation_warning(old: str, new: str | None = None):
+        def _deprecation_warning(old: str, new: str | None = None) -> None:
             import warnings
 
             with warnings.catch_warnings():
