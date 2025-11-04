@@ -15,6 +15,7 @@ from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
 from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
+from pipecat.frames.frames import LLMRunFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
@@ -22,10 +23,9 @@ from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
 from pipecat.runner.types import RunnerArguments
 from pipecat.runner.utils import create_transport
+from pipecat.services.deepgram.stt import DeepgramSTTService
+from pipecat.services.deepgram.tts import DeepgramHttpTTSService
 from pipecat.services.openai.llm import OpenAILLMService
-from pipecat.services.sarvam.stt import SarvamSTTService
-from pipecat.services.sarvam.tts import SarvamHttpTTSService
-from pipecat.transcriptions.language import Language
 from pipecat.transports.base_transport import BaseTransport, TransportParams
 from pipecat.transports.daily.transport import DailyParams
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams
@@ -61,17 +61,13 @@ transport_params = {
 async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     logger.info(f"Starting bot")
 
-    # Create an HTTP session
     async with aiohttp.ClientSession() as session:
-        stt = SarvamSTTService(
-            api_key=os.getenv("SARVAM_API_KEY"),
-            model="saarika:v2.5",
-        )
+        stt = DeepgramSTTService(api_key=os.getenv("DEEPGRAM_API_KEY"))
 
-        tts = SarvamHttpTTSService(
-            api_key=os.getenv("SARVAM_API_KEY"),
+        tts = DeepgramHttpTTSService(
+            api_key=os.getenv("DEEPGRAM_API_KEY"),
+            voice="aura-2-andromeda-en",
             aiohttp_session=session,
-            params=SarvamHttpTTSService.InputParams(language=Language.EN),
         )
 
         llm = OpenAILLMService(api_key=os.getenv("OPENAI_API_KEY"))
@@ -89,7 +85,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
         pipeline = Pipeline(
             [
                 transport.input(),  # Transport user input
-                stt,
+                stt,  # STT
                 context_aggregator.user(),  # User responses
                 llm,  # LLM
                 tts,  # TTS
@@ -112,7 +108,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
             logger.info(f"Client connected")
             # Kick off the conversation.
             messages.append({"role": "system", "content": "Please introduce yourself to the user."})
-            await task.queue_frames([context_aggregator.user().get_context_frame()])
+            await task.queue_frames([LLMRunFrame()])
 
         @transport.event_handler("on_client_disconnected")
         async def on_client_disconnected(transport, client):
