@@ -134,6 +134,12 @@ class SpeechmaticsSTTService(STTService):
                 parameter can be used to adjust the sensitivity of diarization.
                 Defaults to False.
 
+            include_partials: Include partial segment fragments (words) in the output of
+                AddPartialSegment messages. Partial fragments from the STT will always be used for
+                speaker activity detection. This setting is used only for the formatted text output
+                of individual segments.
+                Defaults to True.
+
             speaker_sensitivity: Diarization sensitivity. A higher value increases the sensitivity
                 of diarization and helps when two or more speakers have similar voices.
                 Defaults to 0.5.
@@ -212,6 +218,7 @@ class SpeechmaticsSTTService(STTService):
 
         # Diarization
         enable_diarization: bool = False
+        include_partials: bool = True
         speaker_sensitivity: float = 0.5
         max_speakers: int | None = None
         speaker_active_format: str = "{text}"
@@ -293,6 +300,9 @@ class SpeechmaticsSTTService(STTService):
             raise ValueError("Missing Speechmatics API key")
         if not self._base_url:
             raise ValueError("Missing Speechmatics base URL")
+
+        # Default params
+        params = params or self.InputParams()
 
         # Deprecation check
         self._check_deprecated_args(kwargs, params)
@@ -458,6 +468,7 @@ class SpeechmaticsSTTService(STTService):
             punctuation_overrides=params.punctuation_overrides,
             # Diarization
             enable_diarization=params.enable_diarization,
+            include_partials=params.include_partials,
             speaker_sensitivity=params.speaker_sensitivity,
             max_speakers=params.max_speakers,
             prefer_current_speaker=params.prefer_current_speaker,
