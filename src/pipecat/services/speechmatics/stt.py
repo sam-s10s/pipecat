@@ -46,7 +46,6 @@ try:
         SpeakerFocusMode,
         SpeakerIdentifier,
         SpeechSegmentConfig,
-        SpeechSegmentEmitMode,
         VoiceAgentClient,
         VoiceAgentConfig,
     )
@@ -450,6 +449,15 @@ class SpeechmaticsSTTService(STTService):
             params.max_delay = 4.0
             params.end_of_utterance_max_delay = 10.0
 
+        # Forced end of utterance
+        if params.end_of_utterance_mode in [
+            EndOfUtteranceMode.ADAPTIVE,
+            EndOfUtteranceMode.EXTERNAL,
+        ]:
+            use_forced_eou = True
+        else:
+            use_forced_eou = False
+
         # Create config
         return VoiceAgentConfig(
             # Service
@@ -466,6 +474,7 @@ class SpeechmaticsSTTService(STTService):
             end_of_utterance_mode=params.end_of_utterance_mode,
             additional_vocab=params.additional_vocab,
             punctuation_overrides=params.punctuation_overrides,
+            use_forced_eou=use_forced_eou,
             # Diarization
             enable_diarization=params.enable_diarization,
             include_partials=params.include_partials,
@@ -478,12 +487,11 @@ class SpeechmaticsSTTService(STTService):
                 focus_mode=params.focus_mode,
             ),
             known_speakers=params.known_speakers,
+            # Speech segments
+            speech_segment_config=SpeechSegmentConfig(emit_sentences=False),
             # Advanced
             include_results=True,
             enable_preview_features=params.enable_preview_features,
-            speech_segment_config=SpeechSegmentConfig(
-                emit_mode=SpeechSegmentEmitMode.ON_END_OF_TURN
-            ),
             # Audio
             sample_rate=sample_rate,
             audio_encoding=params.audio_encoding,
