@@ -9,18 +9,127 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added `TransportParams.audio_out_silence_secs`, which specifies how many
+  seconds of silence to output when an `EndFrame` reaches the output
+  transport. This can help ensure that all audio data is fully delivered to
+  clients.
+
+- Added new `FrameProcessor.broadcast_frame()` method. This will push two
+  instances of a given frame class, one upstream and the other downstream.
+
+  ```python
+  await self.broadcast_frame(UserSpeakingFrame)
+  ```
+
+- Added `MetricsLogObserver` for logging performance metrics from `MetricsFrame`
+  instances. Supports filtering via `include_metrics` parameter to control which
+  metrics types are logged (TTFB, processing time, LLM token usage, TTS usage,
+  smart turn metrics).
+
+- Added `pronunciation_dictionary_locators` to `ElevenLabsTTSService` and
+  `ElevenLabsHttpTTSService`.
+
+- Added support for loading external observers. You can now register custom
+  pipeline observers by setting the `PIPECAT_OBSERVER_FILES` environment
+  variable. This variable should contain a colon-separated list of Python files
+  (e.g. `export PIPECAT_OBSERVER_FILES="observer1.py:observer2.py:..."`). Each
+  file must define a function with the following signature:
+
+  ```python
+  async def create_observers(task: PipelineTask) -> Iterable[BaseObserver]:
+      ...
+  ```
+
+- Added support for new sonic-3 languages in `CartesiaTTSService` and
+  `CartesiaHttpTTSService`.
+
 - `EndFrame` and `EndTaskFrame` have an optional `reason` field to indicate why
   the pipeline is being ended.
 
 - `CancelFrame` and `CancelTaskFrame` have an optional `reason` field to
   indicate why the pipeline is being canceled. This can be also specified when
-  you cancel a task with `PipelineTask.cancel(reason="cancellation your
-  reason")`.
+  you cancel a task with `PipelineTask.cancel(reason="cancellation reason")`.
+
+- Added `include_prob_metrics` parameter to Whisper STT services to enable access
+  to probability metrics from transcription results.
+
+- Added utility functions `extract_whisper_probability()`,
+  `extract_openai_gpt4o_probability()`, and `extract_deepgram_probability()` to
+  extract probability metrics from `TranscriptionFrame` objects for Whisper-based,
+  OpenAI GPT-4o-transcribe, and Deepgram STT services respectively.
+
+- Added `LLMSwitcher.register_direct_function()`. It works much like
+  `LLMSwitcher.register_function()` in that it's a shorthand for registering
+  functions on all LLMs in the switcher, but for direct functions.
+
+- Added `LLMSwitcher.register_direct_function()`. It works much like
+  `LLMSwitcher.register_function()` in that it's a shorthand for registering
+  a function on all LLMs in the switcher, except this new method takes a direct
+  function (a `FunctionSchema`-less function).
+
+- Added `MCPClient.get_tools_schema()` and `MCPClient.register_tools_schema()`
+  as a two-step alternative to `MCPClient.register_tools()`, to allow users to
+  pass MCP tools to, say, `GeminiLiveLLMService` (as well as other
+  speech-to-speech services) in the constructor.
+
+- Added support for passing in an `LLMSwicher` to `MCPClient.register_tools()`
+  (as well as the new `MCPClient.register_tools_schema()`).
+
+- Added `cpu_count` parameter to `LocalSmartTurnAnalyzerV3`. This is set to `1`
+  by default for more predictable performance on low-CPU systems.
+
+### Changed
+
+- `STTMuteFilter` no longer sends `STTMuteFrame` to the STT service. The filter
+  now blocks frames locally without instructing the STT service to stop
+  processing audio. This prevents inactivity-related errors (such as 409 errors
+  from Google STT) while maintaining the same muting behavior at the application
+  level. Important: The STTMuteFilter should be placed _after_ the STT service
+  itself.
+
+- Improved `GoogleSTTService` error handling to properly catch gRPC `Aborted`
+  exceptions (corresponding to 409 errors) caused by stream inactivity. These
+  exceptions are now logged at DEBUG level instead of ERROR level, since they
+  indicate expected behavior when no audio is sent for 10+ seconds (e.g., during
+  long silences or when audio input is blocked). The service automatically
+  reconnects when this occurs.
+
+- Bumped the `fastapi` dependency's upperbound to `<0.122.0`.
+
+- Updated the default model for `GoogleVertexLLMService` to `gemini-2.5-flash`.
+
+- Updated the `GoogleVertexLLMService` to use the `GoogleLLMService` as a base
+  class instead of the `OpenAILLMService`.
+
+- Updated STT and TTS services to pass through unverified language codes with a
+  warning instead of returning None. This allows developers to use newly
+  supported languages before Pipecat's service classes are updated, while still
+  providing guidance on verified languages.
 
 ### Fixed
 
+- Fixed `DeepgramSTTService._disconnect()` to properly await `is_connected()`
+  method call, which is an async coroutine in the Deepgram SDK.
+
+- Fixed an issue where the `SmallWebRTCRequest` dataclass in runner would scrub
+  arbitrary request data from client due to camelCase typing. This fixes data
+  passthrough for JS clients where `APIRequest` is used.
+
+- Fixed a bug in `GeminiLiveLLMService` where in some circumstances it wouldn't
+  respond after a tool call.
+
+- Fixed `GeminiLiveLLMService` session resumption after a connection timeout.
+
 - `GeminiLiveLLMService` now properly supports context-provided system
-  instruction and tools
+  instruction and tools.
+
+- Fixed `GoogleLLMService` token counting to avoid double-counting tokens when
+  Gemini sends usage metadata across multiple streaming chunks.
+
+### Removed
+
+- Removed `needs_mcp_alternate_schema()` from `LLMService`. The mechanism that
+  relied on it went away.
 
 ## [0.0.92] - 2025-10-31 🎃 "The Haunted Edition" 👻
 

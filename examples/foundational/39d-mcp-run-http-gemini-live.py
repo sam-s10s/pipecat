@@ -9,7 +9,7 @@ import os
 
 from dotenv import load_dotenv
 from loguru import logger
-from mcp.client.session_group import SseServerParameters
+from mcp.client.session_group import StreamableHttpParameters
 
 from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
 from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
@@ -19,13 +19,13 @@ from pipecat.frames.frames import LLMRunFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
-from pipecat.processors.aggregators.llm_context import LLMContext
+from pipecat.processors.aggregators.llm_context import NOT_GIVEN, LLMContext
 from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
 from pipecat.runner.types import RunnerArguments
 from pipecat.runner.utils import create_transport
-from pipecat.services.anthropic.llm import AnthropicLLMService
 from pipecat.services.cartesia.tts import CartesiaTTSService
 from pipecat.services.deepgram.stt import DeepgramSTTService
+from pipecat.services.google.gemini_live.llm import GeminiLiveLLMService
 from pipecat.services.mcp_service import MCPClient
 from pipecat.transports.base_transport import BaseTransport, TransportParams
 from pipecat.transports.daily.transport import DailyParams
@@ -68,47 +68,53 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
         voice_id="71a7ad14-091c-4e8e-a314-022ece01c121",  # British Reading Lady
     )
 
-    llm = AnthropicLLMService(
-        api_key=os.getenv("ANTHROPIC_API_KEY"), model="claude-3-7-sonnet-latest"
-    )
-
     try:
-        # https://docs.mcp.run/integrating/tutorials/mcp-run-sse-openai-agents/
-        mcp = MCPClient(server_params=SseServerParameters(url=os.getenv("MCP_RUN_SSE_URL")))
+        # Github MCP docs: https://github.com/github/github-mcp-server
+        # Enable Github Copilot on your GitHub account. Free tier is ok. (https://github.com/settings/copilot)
+        # Generate a personal access token. It must be a Fine-grained token, classic tokens are not supported. (https://github.com/settings/personal-access-tokens)
+        # Set permissions you want to use (eg. "all repositories", "profile: read/write", etc)
+        mcp = MCPClient(
+            server_params=StreamableHttpParameters(
+                url="https://api.githubcopilot.com/mcp/",
+                headers={"Authorization": f"Bearer {os.getenv('GITHUB_PERSONAL_ACCESS_TOKEN')}"},
+            )
+        )
     except Exception as e:
         logger.error(f"error setting up mcp")
         logger.exception("error trace:")
 
     tools = {}
     try:
-        tools = await mcp.register_tools(llm)
+        tools = await mcp.get_tools_schema()
     except Exception as e:
         logger.error(f"error registering tools")
         logger.exception("error trace:")
 
     system = f"""
     You are a helpful LLM in a WebRTC call.
-    Your goal is to demonstrate your capabilities in a succinct way.
-    You have access to a number of tools provided by mcp.run. Use any and all tools to help users.
+    Your goal is to answer questions about the user's GitHub repositories and account.
+    You have access to a number of tools provided by Github. Use any and all tools to help users.
     Your output will be converted to audio so don't include special characters in your answers.
-    Respond to what the user said in a creative and helpful way.
-    When asked for today's date, use 'https://www.datetoday.net/'.
     Don't overexplain what you are doing.
     Just respond with short sentences when you are carrying out tool calls.
     """
 
-    messages = [{"role": "system", "content": system}]
+    llm = GeminiLiveLLMService(
+        api_key=os.getenv("GOOGLE_API_KEY"),
+        system_instruction=system,
+        tools=tools,
+    )
 
-    context = LLMContext(messages, tools)
+    await mcp.register_tools_schema(tools, llm)
+
+    context = LLMContext([{"role": "user", "content": "Please introduce yourself."}])
     context_aggregator = LLMContextAggregatorPair(context)
 
     pipeline = Pipeline(
         [
             transport.input(),  # Transport user input
-            stt,
             context_aggregator.user(),  # User spoken responses
             llm,  # LLM
-            tts,  # TTS
             transport.output(),  # Transport bot output
             context_aggregator.assistant(),  # Assistant spoken responses and tool context
         ]
@@ -146,9 +152,9 @@ async def bot(runner_args: RunnerArguments):
 
 
 if __name__ == "__main__":
-    if not os.getenv("MCP_RUN_SSE_URL"):
+    if not os.getenv("GITHUB_PERSONAL_ACCESS_TOKEN"):
         logger.error(
-            f"Please set MCP_RUN_SSE_URL environment variable for this example. See https://mcp.run"
+            f"Please set GITHUB_PERSONAL_ACCESS_TOKEN environment variable for this example."
         )
         import sys
 
