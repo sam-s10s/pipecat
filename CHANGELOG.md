@@ -5,9 +5,33 @@ All notable changes to **Pipecat** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.0.94] - 2025-11-10
+
+### Deprecated
+
+- The `KrispFilter` is deprecated and will be removed in a future version. Use
+  the `KrispVivaFilter` instead.
+
+### Removed
+
+- `LivekitFrameSerializer` has been removed. Use `LiveKitTransport` instead.
+
+### Fixed
+
+- Fixed a bug related to `LLMAssistantAggregator` where spaces were sometimes
+  missing from assistant messages in context.
+
+## [0.0.93] - 2025-11-07
 
 ### Added
+
+- Added support for Sarvam Speech-to-Text service (`SarvamSTTService`) with
+  streaming WebSocket support for `saarika` (STT) and `saaras` (STT-translate)
+  models.
+
+- Added support for passing in a `ToolsSchema` in lieu of a list of provider-
+  specific dicts when initializing `OpenAIRealtimeLLMService` or when updating
+  it using `LLMUpdateSettingsFrame`.
 
 - Added `TransportParams.audio_out_silence_secs`, which specifies how many
   seconds of silence to output when an `EndFrame` reaches the output
@@ -80,6 +104,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Updated `simli-ai` to 0.1.25.
+
 - `STTMuteFilter` no longer sends `STTMuteFrame` to the STT service. The filter
   now blocks frames locally without instructing the STT service to stop
   processing audio. This prevents inactivity-related errors (such as 409 errors
@@ -106,7 +132,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   supported languages before Pipecat's service classes are updated, while still
   providing guidance on verified languages.
 
+### Removed
+
+- Removed `needs_mcp_alternate_schema()` from `LLMService`. The mechanism that
+  relied on it went away.
+
 ### Fixed
+
+- Restore backwards compatibility for vision/image features (broken in 0.0.92)
+  when using non-universal context and assistant aggregators.
 
 - Fixed `DeepgramSTTService._disconnect()` to properly await `is_connected()`
   method call, which is an async coroutine in the Deepgram SDK.
@@ -126,17 +160,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed `GoogleLLMService` token counting to avoid double-counting tokens when
   Gemini sends usage metadata across multiple streaming chunks.
 
-### Removed
-
-- Removed `needs_mcp_alternate_schema()` from `LLMService`. The mechanism that
-  relied on it went away.
-
 ## [0.0.92] - 2025-10-31 🎃 "The Haunted Edition" 👻
 
 ### Added
-
-- Added supprt for Sarvam Speech-to-Text service (`SarvamSTTService`) with streaming WebSocket
-  support for `saarika` (STT) and `saaras` (STT-translate) models.
 
 - Added a new `DeepgramHttpTTSService`, which delivers a meaningful reduction
   in latency when compared to the `DeepgramTTSService`.

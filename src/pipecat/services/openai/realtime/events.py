@@ -12,6 +12,8 @@ from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from pipecat.adapters.schemas.tools_schema import ToolsSchema
+
 #
 # session properties
 #
@@ -170,10 +172,8 @@ class SessionProperties(BaseModel):
         object: Object type identifier, always "realtime.session".
         id: Unique identifier for the session.
         model: The Realtime model used for this session.
-            Note: The model is set at connection time via the WebSocket URL query
-            parameter and cannot be changed during the session. This field is populated
-            by the server in session.created and session.updated responses, but is effectively
-            a no-op for session.update requests.
+            Note: The model is set at connection time via model arg in __init__
+            and cannot be changed during the session.
         output_modalities: The set of modalities the model can respond with.
         instructions: System instructions for the assistant.
         audio: Configuration for input and output audio.
@@ -186,6 +186,9 @@ class SessionProperties(BaseModel):
         include: Additional fields to include in server outputs.
     """
 
+    # Needed to support ToolSchema in tools field.
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     type: Optional[Literal["realtime"]] = "realtime"
     object: Optional[Literal["realtime.session"]] = None
     id: Optional[str] = None
@@ -193,7 +196,10 @@ class SessionProperties(BaseModel):
     output_modalities: Optional[List[Literal["text", "audio"]]] = None
     instructions: Optional[str] = None
     audio: Optional[AudioConfiguration] = None
-    tools: Optional[List[Dict]] = None
+    # Tools can only be ToolsSchema when provided by the user, in either the
+    # OpenAIRealtimeLLMService constructor or through LLMUpdateSettingsFrame.
+    # We'll never serialize/deserialize ToolsSchema when talking to the server.
+    tools: Optional[ToolsSchema | List[Dict]] = None
     tool_choice: Optional[Literal["auto", "none", "required"]] = None
     max_output_tokens: Optional[Union[int, Literal["inf"]]] = None
     tracing: Optional[Union[Literal["auto"], Dict]] = None
