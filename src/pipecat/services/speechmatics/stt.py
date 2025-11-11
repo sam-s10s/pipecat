@@ -394,6 +394,13 @@ class SpeechmaticsSTTService(STTService):
         if self._config.enable_diarization:
             self._client.on(AgentServerMessageType.SPEAKERS_RESULT, add_message)
 
+        # Other messages for debugging
+        self._client.on(AgentServerMessageType.ERROR, add_message)
+        self._client.on(AgentServerMessageType.WARNING, add_message)
+        self._client.on(AgentServerMessageType.INFO, add_message)
+        self._client.on(AgentServerMessageType.END_OF_TURN_PREDICTION, add_message)
+        self._client.on(AgentServerMessageType.END_OF_UTTERANCE, add_message)
+
         # Connect to the client
         try:
             await self._client.connect()
@@ -450,13 +457,11 @@ class SpeechmaticsSTTService(STTService):
             params.end_of_utterance_max_delay = 10.0
 
         # Forced end of utterance
-        if params.end_of_utterance_mode in [
+        use_forced_eou_message = params.end_of_utterance_mode in [
             EndOfUtteranceMode.ADAPTIVE,
             EndOfUtteranceMode.EXTERNAL,
-        ]:
-            use_forced_eou = True
-        else:
-            use_forced_eou = False
+            EndOfUtteranceMode.SMART_TURN,
+        ]
 
         # Create config
         return VoiceAgentConfig(
@@ -474,7 +479,7 @@ class SpeechmaticsSTTService(STTService):
             end_of_utterance_mode=params.end_of_utterance_mode,
             additional_vocab=params.additional_vocab,
             punctuation_overrides=params.punctuation_overrides,
-            use_forced_eou=use_forced_eou,
+            use_forced_eou_message=use_forced_eou_message,
             # Diarization
             enable_diarization=params.enable_diarization,
             include_partials=params.include_partials,
@@ -546,7 +551,7 @@ class SpeechmaticsSTTService(STTService):
             case AgentServerMessageType.SPEAKERS_RESULT:
                 await self._handle_speakers_result(message)
             case _:
-                logger.debug(f"{self} Unhandled message: {event}")
+                logger.debug(f"{self} {event} -> {message}")
 
     async def _handle_partial_segment(self, message: dict[str, Any]) -> None:
         """Handle AddPartialSegment events.
