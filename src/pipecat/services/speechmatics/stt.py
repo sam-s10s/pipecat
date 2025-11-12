@@ -48,6 +48,7 @@ try:
         SpeechSegmentConfig,
         VoiceAgentClient,
         VoiceAgentConfig,
+        VoiceAgentConfigPreset,
     )
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
@@ -82,10 +83,6 @@ class SpeechmaticsSTTService(STTService):
         """Configuration parameters for Speechmatics STT service.
 
         Parameters:
-            operating_point: Operating point for transcription accuracy vs. latency tradeoff. It is
-                recommended to use OperatingPoint.ENHANCED for most use cases. Defaults to
-                OperatingPoint.ENHANCED.
-
             domain: Domain for Speechmatics API. Defaults to None.
 
             language: Language code for transcription. Defaults to `Language.EN`.
@@ -93,60 +90,11 @@ class SpeechmaticsSTTService(STTService):
             output_locale: Output locale for transcription, e.g. `Language.EN_GB`.
                 Defaults to None.
 
+            preset: Preset configuration for the STT engine. Defaults to "conversation_adaptive".
+
             enable_vad: Enable VAD to trigger end of utterance detection. This should be used
                 without any other VAD enabled in the agent and will emit the speaker started
                 and stopped frames. Defaults to False.
-
-            max_delay: Maximum delay in seconds for transcription. This forces the STT engine to
-                speed up the processing of transcribed words and reduces the interval between partial
-                and final results. Lower values can have an impact on accuracy. Defaults to 0.7.
-
-            end_of_utterance_silence_trigger: Maximum delay in seconds for end of utterance trigger.
-                The delay is used to wait for any further transcribed words before emitting the final
-                word frames. The value must be lower than max_delay.
-                Defaults to 0.2.
-
-            end_of_utterance_max_delay: Maximum delay in seconds for end of utterance detection.
-                This is used to wait for any further transcribed words before emitting the final
-                word frames. The value must be lower than max_delay.
-                Defaults to 10.0.
-
-            end_of_utterance_mode: End of utterance delay mode. When ADAPTIVE is used, the delay
-                can be adjusted on the content of what the most recent speaker has said, such as
-                rate of speech and whether they have any pauses or disfluencies. When FIXED is used,
-                the delay is fixed to the value of `end_of_utterance_delay`. Use of EXTERNAL disables
-                end of utterance detection and uses end_of_utterance_max_delay as a fallback timer.
-                Defaults to `EndOfUtteranceMode.FIXED`.
-
-            additional_vocab: List of additional vocabulary entries. If you supply a list of
-                additional vocabulary entries, the this will increase the weight of the words in the
-                vocabulary and help the STT engine to better transcribe the words.
-                Defaults to [].
-
-            punctuation_overrides: Punctuation overrides. This allows you to override the punctuation
-                in the STT engine. This is useful for languages that use different punctuation
-                than English. See documentation for more information.
-                Defaults to None.
-
-            enable_diarization: Enable speaker diarization. When enabled, the STT engine will
-                determine and attribute words to unique speakers. The speaker_sensitivity
-                parameter can be used to adjust the sensitivity of diarization.
-                Defaults to False.
-
-            include_partials: Include partial segment fragments (words) in the output of
-                AddPartialSegment messages. Partial fragments from the STT will always be used for
-                speaker activity detection. This setting is used only for the formatted text output
-                of individual segments.
-                Defaults to True.
-
-            speaker_sensitivity: Diarization sensitivity. A higher value increases the sensitivity
-                of diarization and helps when two or more speakers have similar voices.
-                Defaults to 0.5.
-
-            max_speakers: Maximum number of speakers to detect. This forces the STT engine to cluster
-                words into a fixed number of speakers. It should not be used to limit the number of
-                speakers, unless it is clear that there will only be a known number of speakers.
-                Defaults to None.
 
             speaker_active_format: Formatter for active speaker ID. This formatter is used to format
                 the text output for individual speakers and ensures that the context is clear for
@@ -154,16 +102,12 @@ class SpeechmaticsSTTService(STTService):
                 available. The system instructions for the language model may need to include any
                 necessary instructions to handle the formatting.
                 Example: `@{speaker_id}: {text}`.
-                Defaults to transcription output.
+                Defaults to "{text}".
 
             speaker_passive_format: Formatter for passive speaker ID. As with the
                 speaker_active_format, the attributes `text` and `speaker_id` are available.
                 Example: `@{speaker_id} [background]: {text}`.
-                Defaults to transcription output.
-
-            prefer_current_speaker: Prefer current speaker ID. When set to true, groups of words close
-                together are given extra weight to be identified as the same speaker.
-                Defaults to False.
+                Defaults to None.
 
             focus_speakers: List of speaker IDs to focus on. When enabled, only these speakers are
                 emitted as finalized frames and other speakers are considered passive. Words from
@@ -194,45 +138,117 @@ class SpeechmaticsSTTService(STTService):
                 Refer to our examples on the format of the known_speakers parameter.
                 Defaults to [].
 
-            enable_preview_features: Enable preview features using a preview endpoint provided by
-                Speechmatics. Defaults to False.
+            additional_vocab: List of additional vocabulary entries. If you supply a list of
+                additional vocabulary entries, the this will increase the weight of the words in the
+                vocabulary and help the STT engine to better transcribe the words.
+                Defaults to [].
 
             audio_encoding: Audio encoding format. Defaults to AudioEncoding.PCM_S16LE.
+
+            operating_point: Operating point for transcription accuracy vs. latency tradeoff. It is
+                recommended to use OperatingPoint.ENHANCED for most use cases. Default to preset.
+
+            max_delay: Maximum delay in seconds for transcription. This forces the STT engine to
+                speed up the processing of transcribed words and reduces the interval between partial
+                and final results. Lower values can have an impact on accuracy. Default to preset.
+
+            end_of_utterance_silence_trigger: Maximum delay in seconds for end of utterance trigger.
+                The delay is used to wait for any further transcribed words before emitting the final
+                word frames. The value must be lower than max_delay. Default to preset.
+
+            end_of_utterance_max_delay: Maximum delay in seconds for end of utterance delay.
+                The delay is used to wait for any further transcribed words before emitting the final
+                word frames. The value must be greater than end_of_utterance_silence_trigger.
+                Default to preset.
+
+            end_of_utterance_mode: End of utterance delay mode. When ADAPTIVE is used, the delay
+                can be adjusted on the content of what the most recent speaker has said, such as
+                rate of speech and whether they have any pauses or disfluencies. When FIXED is used,
+                the delay is fixed to the value of `end_of_utterance_silence_trigger`. Use of EXTERNAL
+                disables end of utterance detection and uses end_of_utterance_max_delay as a fallback timer.
+                SMART_TURN uses a combination of silence detection, adaptive delay and smart turn detection
+                using machine learning to determine the end of turn. Default to preset.
+
+            punctuation_overrides: Punctuation overrides. This allows you to override the punctuation
+                in the STT engine. This is useful for languages that use different punctuation
+                than English. See documentation for more information. Default to preset.
+
+            include_partials: Include partial segment fragments (words) in the output of
+                AddPartialSegment messages. Partial fragments from the STT will always be used for
+                speaker activity detection. This setting is used only for the formatted text output
+                of individual segments. Default to preset.
+
+            enable_diarization: Enable speaker diarization. When enabled, the STT engine will
+                determine and attribute words to unique speakers. The speaker_sensitivity
+                parameter can be used to adjust the sensitivity of diarization.
+                Default to preset.
+
+            speaker_sensitivity: Diarization sensitivity. A higher value increases the sensitivity
+                of diarization and helps when two or more speakers have similar voices.
+                Default to preset.
+
+            max_speakers: Maximum number of speakers to detect. This forces the STT engine to cluster
+                words into a fixed number of speakers. It should not be used to limit the number of
+                speakers, unless it is clear that there will only be a known number of speakers.
+                Default to preset.
+
+            prefer_current_speaker: Prefer current speaker ID. When set to true, groups of words close
+                together are given extra weight to be identified as the same speaker.
+                Default to preset.
+
+            extra_params: Extra parameters to pass to the STT engine. This is a dictionary of
+                additional parameters that can be used to configure the STT engine.
+                Default to None.
         """
 
         # Service configuration
-        operating_point: OperatingPoint = OperatingPoint.ENHANCED
         domain: str | None = None
         language: Language | str = Language.EN
         output_locale: Language | str | None = None
 
-        # Features
-        enable_vad: bool = False
-        max_delay: float = 0.7
-        end_of_utterance_silence_trigger: float = 0.2
-        end_of_utterance_max_delay: float = 10.0
-        end_of_utterance_mode: EndOfUtteranceMode = EndOfUtteranceMode.FIXED
-        additional_vocab: list[AdditionalVocabEntry] = []
-        punctuation_overrides: dict | None = None
+        # Preset
+        preset: str = "conversation_adaptive"
 
-        # Diarization
-        enable_diarization: bool = False
-        include_partials: bool = True
-        speaker_sensitivity: float = 0.5
-        max_speakers: int | None = None
-        speaker_active_format: str = "{text}"
+        # VAD / turn endpointing
+        enable_vad: bool = False
+
+        # Output formatting
+        speaker_active_format: str = "@{speaker_id}: {text}"
         speaker_passive_format: str | None = None
-        prefer_current_speaker: bool = False
+
+        # Speakers
         focus_speakers: list[str] = []
         ignore_speakers: list[str] = []
         focus_mode: SpeakerFocusMode = SpeakerFocusMode.RETAIN
         known_speakers: list[SpeakerIdentifier] = []
 
-        # Advanced features
-        enable_preview_features: bool = False
+        # Custom dictionary
+        additional_vocab: list[AdditionalVocabEntry] = []
 
         # Audio
         audio_encoding: AudioEncoding = AudioEncoding.PCM_S16LE
+
+        # -------------------
+        # Advanced features
+        # -------------------
+
+        # Features
+        operating_point: OperatingPoint | None = None
+        max_delay: float | None = None
+        end_of_utterance_silence_trigger: float | None = None
+        end_of_utterance_max_delay: float | None = None
+        end_of_utterance_mode: EndOfUtteranceMode | None = None
+        punctuation_overrides: dict | None = None
+        include_partials: bool | None = None
+
+        # Diarization
+        enable_diarization: bool | None = None
+        speaker_sensitivity: float | None = None
+        max_speakers: int | None = None
+        prefer_current_speaker: bool | None = None
+
+        # Extra parameters
+        extra_params: dict | None = None
 
     class UpdateParams(BaseModel):
         """Update parameters for Speechmatics STT service.
@@ -308,7 +324,7 @@ class SpeechmaticsSTTService(STTService):
 
         # Voice agent
         self._client: VoiceAgentClient | None = None
-        self._config: VoiceAgentConfig = self._prepare_config(sample_rate, params)
+        self._config: VoiceAgentConfig = self._prepare_config(params)
 
         # Outbound frame queue
         self._outbound_frames: asyncio.Queue[Frame] = asyncio.Queue()
@@ -369,6 +385,9 @@ class SpeechmaticsSTTService(STTService):
         # Log the event
         logger.debug(f"{self} connecting to Speechmatics STT service")
 
+        # Update the audio sample rate
+        self._config.sample_rate = self._sample_rate
+
         # STT client
         self._client: VoiceAgentClient = VoiceAgentClient(
             api_key=self._api_key,
@@ -404,10 +423,12 @@ class SpeechmaticsSTTService(STTService):
         # Connect to the client
         try:
             await self._client.connect()
-            logger.debug(f"{self} connected to Speechmatics STT service")
+            logger.debug(f"{self} connected")
         except Exception as e:
-            logger.error(f"{self} error connecting to Speechmatics: {e}")
+            err_msg = f"{self} error connecting: {e}"
+            logger.error(err_msg)
             self._client = None
+            await self.push_error(ErrorFrame(error=err_msg, fatal=True))
 
     async def _disconnect(self) -> None:
         """Disconnect from the STT service.
@@ -445,62 +466,70 @@ class SpeechmaticsSTTService(STTService):
     # CONFIGURATION
     # ============================================================================
 
-    def _prepare_config(self, sample_rate: int, params: InputParams | None = None) -> None:
+    def _prepare_config(self, params: InputParams) -> VoiceAgentConfig:
         """Parse the InputParams into VoiceAgentConfig."""
-        # Default config
-        if not params:
-            return VoiceAgentConfig()
+        # Preset
+        config = VoiceAgentConfigPreset.load(params.preset)
 
-        # Override defaults
-        if params.end_of_utterance_mode == EndOfUtteranceMode.EXTERNAL:
+        # Override for external trigger
+        if not params.enable_vad:
+            params.end_of_utterance_mode = EndOfUtteranceMode.EXTERNAL
             params.max_delay = 4.0
             params.end_of_utterance_max_delay = 10.0
 
-        # Forced end of utterance
-        use_forced_eou_message = params.end_of_utterance_mode in [
-            EndOfUtteranceMode.ADAPTIVE,
-            EndOfUtteranceMode.EXTERNAL,
-            EndOfUtteranceMode.SMART_TURN,
-        ]
-
-        # Create config
-        return VoiceAgentConfig(
-            # Service
-            operating_point=params.operating_point,
-            domain=params.domain,
-            language=self._language_to_speechmatics_language(params.language),
-            output_locale=self._locale_to_speechmatics_locale(
-                params.language, params.output_locale
-            ),
-            # Features
-            max_delay=params.max_delay,
-            end_of_utterance_silence_trigger=params.end_of_utterance_silence_trigger,
-            end_of_utterance_max_delay=params.end_of_utterance_max_delay,
-            end_of_utterance_mode=params.end_of_utterance_mode,
-            additional_vocab=params.additional_vocab,
-            punctuation_overrides=params.punctuation_overrides,
-            use_forced_eou_message=use_forced_eou_message,
-            # Diarization
-            enable_diarization=params.enable_diarization,
-            include_partials=params.include_partials,
-            speaker_sensitivity=params.speaker_sensitivity,
-            max_speakers=params.max_speakers,
-            prefer_current_speaker=params.prefer_current_speaker,
-            speaker_config=SpeakerFocusConfig(
-                focus_speakers=params.focus_speakers,
-                ignore_speakers=params.ignore_speakers,
-                focus_mode=params.focus_mode,
-            ),
-            known_speakers=params.known_speakers,
-            # Speech segments
-            speech_segment_config=SpeechSegmentConfig(emit_sentences=False),
-            # Advanced
-            include_results=True,
-            enable_preview_features=params.enable_preview_features,
-            # Audio
-            sample_rate=sample_rate,
-            audio_encoding=params.audio_encoding,
+        # Language + domain
+        config.language = self._language_to_speechmatics_language(params.language)
+        config.domain = params.domain
+        config.output_locale = self._locale_to_speechmatics_locale(
+            params.language, params.output_locale
         )
+
+        # Speaker config
+        config.speaker_config = SpeakerFocusConfig(
+            focus_speakers=params.focus_speakers,
+            ignore_speakers=params.ignore_speakers,
+            focus_mode=params.focus_mode,
+        )
+        config.known_speakers = params.known_speakers
+
+        # Custom dictionary
+        config.additional_vocab = params.additional_vocab
+
+        # Advanced parameters
+        if params.operating_point is not None:
+            config.operating_point = params.operating_point
+        if params.max_delay is not None:
+            config.max_delay = params.max_delay
+        if params.end_of_utterance_silence_trigger is not None:
+            config.end_of_utterance_silence_trigger = params.end_of_utterance_silence_trigger
+        if params.end_of_utterance_max_delay is not None:
+            config.end_of_utterance_max_delay = params.end_of_utterance_max_delay
+        if params.end_of_utterance_mode is not None:
+            config.end_of_utterance_mode = params.end_of_utterance_mode
+        if params.punctuation_overrides is not None:
+            config.punctuation_overrides = params.punctuation_overrides
+        if params.include_partials is not None:
+            config.include_partials = params.include_partials
+        if params.enable_diarization is not None:
+            config.enable_diarization = params.enable_diarization
+        if params.speaker_sensitivity is not None:
+            config.speaker_sensitivity = params.speaker_sensitivity
+        if params.max_speakers is not None:
+            config.max_speakers = params.max_speakers
+        if params.prefer_current_speaker is not None:
+            config.prefer_current_speaker = params.prefer_current_speaker
+
+        # Extra parameters
+        if isinstance(params.extra_params, dict):
+            for key, value in params.extra_params.items():
+                if hasattr(config, key):
+                    setattr(config, key, value)
+
+        # Debug
+        logger.debug(f"{self} config: {config.to_json()}")
+
+        # Return the complete config
+        return config
 
     def update_params(
         self,
@@ -939,7 +968,7 @@ class SpeechmaticsSTTService(STTService):
             ("output_locale_code", "output_locale"),
             ("enable_partials", None),
             ("max_delay", "max_delay"),
-            ("chunk_size", "chunk_size"),
+            ("chunk_size", None),
             ("audio_encoding", "audio_encoding"),
             ("end_of_utterance_silence_trigger", "end_of_utterance_silence_trigger"),
             {"enable_speaker_diarization", "enable_diarization"},
