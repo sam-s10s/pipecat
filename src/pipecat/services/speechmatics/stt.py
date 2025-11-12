@@ -45,7 +45,6 @@ try:
         SpeakerFocusConfig,
         SpeakerFocusMode,
         SpeakerIdentifier,
-        SpeechSegmentConfig,
         VoiceAgentClient,
         VoiceAgentConfig,
         VoiceAgentConfigPreset,
@@ -101,13 +100,11 @@ class SpeechmaticsSTTService(STTService):
                 language models further down the pipeline. The attributes `text` and `speaker_id` are
                 available. The system instructions for the language model may need to include any
                 necessary instructions to handle the formatting.
-                Example: `@{speaker_id}: {text}`.
-                Defaults to "{text}".
+                Example: `@{speaker_id}: {text}`. Defaults to None.
 
             speaker_passive_format: Formatter for passive speaker ID. As with the
                 speaker_active_format, the attributes `text` and `speaker_id` are available.
-                Example: `@{speaker_id} [background]: {text}`.
-                Defaults to None.
+                Example: `@{speaker_id} [background]: {text}`. Defaults to None.
 
             focus_speakers: List of speaker IDs to focus on. When enabled, only these speakers are
                 emitted as finalized frames and other speakers are considered passive. Words from
@@ -213,7 +210,7 @@ class SpeechmaticsSTTService(STTService):
         enable_vad: bool = False
 
         # Output formatting
-        speaker_active_format: str = "@{speaker_id}: {text}"
+        speaker_active_format: str | None = None
         speaker_passive_format: str | None = None
 
         # Speakers
@@ -328,6 +325,12 @@ class SpeechmaticsSTTService(STTService):
 
         # Outbound frame queue
         self._outbound_frames: asyncio.Queue[Frame] = asyncio.Queue()
+
+        # Output formatting
+        if params.speaker_active_format is None:
+            params.speaker_active_format = (
+                "@{speaker_id}: {text}" if params.enable_diarization else "{text}"
+            )
 
         # Framework options
         self._enable_vad: bool = params.enable_vad
@@ -474,7 +477,7 @@ class SpeechmaticsSTTService(STTService):
         # Override for external trigger
         if not params.enable_vad:
             params.end_of_utterance_mode = EndOfUtteranceMode.EXTERNAL
-            params.max_delay = 4.0
+            params.max_delay = 2.0
             params.end_of_utterance_max_delay = 10.0
 
         # Language + domain
@@ -496,28 +499,21 @@ class SpeechmaticsSTTService(STTService):
         config.additional_vocab = params.additional_vocab
 
         # Advanced parameters
-        if params.operating_point is not None:
-            config.operating_point = params.operating_point
-        if params.max_delay is not None:
-            config.max_delay = params.max_delay
-        if params.end_of_utterance_silence_trigger is not None:
-            config.end_of_utterance_silence_trigger = params.end_of_utterance_silence_trigger
-        if params.end_of_utterance_max_delay is not None:
-            config.end_of_utterance_max_delay = params.end_of_utterance_max_delay
-        if params.end_of_utterance_mode is not None:
-            config.end_of_utterance_mode = params.end_of_utterance_mode
-        if params.punctuation_overrides is not None:
-            config.punctuation_overrides = params.punctuation_overrides
-        if params.include_partials is not None:
-            config.include_partials = params.include_partials
-        if params.enable_diarization is not None:
-            config.enable_diarization = params.enable_diarization
-        if params.speaker_sensitivity is not None:
-            config.speaker_sensitivity = params.speaker_sensitivity
-        if params.max_speakers is not None:
-            config.max_speakers = params.max_speakers
-        if params.prefer_current_speaker is not None:
-            config.prefer_current_speaker = params.prefer_current_speaker
+        for param in [
+            "operating_point",
+            "max_delay",
+            "end_of_utterance_silence_trigger",
+            "end_of_utterance_max_delay",
+            "end_of_utterance_mode",
+            "punctuation_overrides",
+            "include_partials",
+            "enable_diarization",
+            "speaker_sensitivity",
+            "max_speakers",
+            "prefer_current_speaker",
+        ]:
+            if getattr(params, param) is not None:
+                setattr(config, param, getattr(params, param))
 
         # Extra parameters
         if isinstance(params.extra_params, dict):
