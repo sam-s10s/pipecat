@@ -655,12 +655,10 @@ class RivaSegmentedSTTService(SegmentedSTTService):
                     logger.debug("No transcription results found in Riva response")
 
             except AttributeError as ae:
-                logger.error(f"Unexpected response structure from Riva: {ae}")
                 yield ErrorFrame(f"Unexpected Riva response format: {str(ae)}")
 
         except Exception as e:
-            logger.exception(f"Riva Canary ASR error: {e}")
-            yield ErrorFrame(f"Riva Canary ASR error: {str(e)}")
+            yield ErrorFrame(error=f"Unknown error occurred: {e}")
 
 
 class ParakeetSTTService(RivaSTTService):
