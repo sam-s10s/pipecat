@@ -630,7 +630,7 @@ class SpeechmaticsSTTService(STTService):
         """
         logger.debug(f"{self} StartOfTurn received")
         await self.push_interruption_task_frame_and_wait()
-        await self.broadcast_frame(UserStartedSpeakingFrame())
+        await self.broadcast_frame(UserStartedSpeakingFrame)
         # await self.start_processing_metrics()
 
     async def _handle_end_of_turn(self, message: dict[str, Any]) -> None:
@@ -650,7 +650,7 @@ class SpeechmaticsSTTService(STTService):
         """
         logger.debug(f"{self} EndOfTurn received")
         # await self.stop_processing_metrics()
-        await self.broadcast_frame(UserStoppedSpeakingFrame())
+        await self.broadcast_frame(UserStoppedSpeakingFrame)
 
     async def _handle_speakers_result(self, message: dict[str, Any]) -> None:
         """Handle SpeakersResult events.
