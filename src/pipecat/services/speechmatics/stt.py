@@ -339,6 +339,11 @@ class SpeechmaticsSTTService(STTService):
             params.speaker_passive_format or params.speaker_active_format
         )
 
+        # Log the config
+        logger.debug(
+            f"{self} config: {self._config.to_json(exclude_none=True, exclude_defaults=True, exclude_unset=True)}"
+        )
+
         # Metrics
         self.set_model_name(self._config.operating_point.value)
 
@@ -521,9 +526,6 @@ class SpeechmaticsSTTService(STTService):
                 if hasattr(config, key):
                     setattr(config, key, value)
 
-        # Debug
-        logger.debug(f"{self} config: {config.to_json()}")
-
         # Return the complete config
         return config
 
@@ -628,8 +630,7 @@ class SpeechmaticsSTTService(STTService):
         """
         logger.debug(f"{self} StartOfTurn received")
         await self.push_interruption_task_frame_and_wait()
-        await self.push_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
-        await self.push_frame(UserStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await self.broadcast_frame(UserStartedSpeakingFrame())
         # await self.start_processing_metrics()
 
     async def _handle_end_of_turn(self, message: dict[str, Any]) -> None:
@@ -649,8 +650,7 @@ class SpeechmaticsSTTService(STTService):
         """
         logger.debug(f"{self} EndOfTurn received")
         # await self.stop_processing_metrics()
-        await self.push_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
-        await self.push_frame(UserStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await self.broadcast_frame(UserStoppedSpeakingFrame())
 
     async def _handle_speakers_result(self, message: dict[str, Any]) -> None:
         """Handle SpeakersResult events.
