@@ -170,6 +170,11 @@ class DeepgramTTSService(WebsocketTTSService):
 
             self._websocket = await websocket_connect(url, additional_headers=headers)
 
+            headers = {
+                k: v for k, v in self._websocket.response.headers.items() if k.startswith("dg-")
+            }
+            logger.debug(f'{self}: Websocket connection initialized: {{"headers": {headers}}}')
+
             await self._call_event_handler("on_connected")
         except Exception as e:
             logger.error(f"{self} exception: {e}")

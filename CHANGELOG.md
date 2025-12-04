@@ -15,12 +15,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- If an unexpected exception is caught, or if `FrameProcessor.push_error()` is
+  called with an exception, the file name and line number where the exception
+  occured are now logged.
+
+- Improved interruption handling to prevent bots from repeating themselves.
+  LLM services that return multiple sentences in a single response (e.g.,
+  `GoogleLLMService`) are now split into individual sentences before being sent
+  to TTS. This ensures interruptions occur at sentence boundaries, preventing
+  the bot from repeating content after being interrupted during long responses.
+
+- Text Aggregation Improvements:
+
+  - **Breaking Change**: `BaseTextAggregator.aggregate()` now returns
+    `AsyncIterator[Aggregation]` instead of `Optional[Aggregation]`. This
+    enables the aggregator to return multiple results based on the provided
+    text.
+  - Refactored text aggregators to use inheritance: `SkipTagsAggregator` and
+    `PatternPairAggregator` now inherit from `SimpleTextAggregator`, reusing
+    the base class's sentence detection logic.
+
 - Updated `AICFilter` to use Quail STT as the default model
   (`AICModelType.QUAIL_STT`). Quail STT is optimized for human-to-machine
   interaction (e.g., voice agents, speech-to-text) and operates at a native
   sample rate of 16 kHz with fixed enhancement parameters.
 
+- Updated Deepgram logging to include Deepgram request IDs for improved debugging.
+
+- Updated Smart Turn model weights to v3.1.
+
+- Smart Turn analyzer now uses the full context of the turn rather than just the
+  audio since VAD last triggered.
+
 ### Deprecated
+
+- Package `pipecat.sync` is deprecated, use `pipecat.utils.sync` instead.
 
 - The `noise_gate_enable` parameter in `AICFilter` is deprecated and no longer
   has any effect. Noise gating is now handled automatically by the AIC VAD
@@ -35,6 +64,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `uv pip install pipecat-ai[riva]`
 
 ### Fixed
+
+- Fixed an issue in `ElevenLabsTTSService` where character usage metrics were
+  only reported on the first TTS generation per turn.
+
+- Fixed an issue where `LLMTextFrame.skip_tts` was being overwritten by LLM
+  services.
+
+- Fixed sentence aggregation to correctly handle ambiguous punctuation in
+  streaming text, such as currency ("$29.95") and abbreviations ("Mr. Smith").
+
+- Fixed bug in `PatternPairAggregator` where pattern handlers could be called
+  multiple times for `KEEP` or `AGGREGATE` patterns.
 
 - Fixed an issue in `SarvamTTSService` where the last sentence was not being
   spoken. Now, audio is flushed when the TTS services receives the
